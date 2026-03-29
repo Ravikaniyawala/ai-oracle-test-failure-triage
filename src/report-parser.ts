@@ -237,13 +237,14 @@ function parseJUnitXml(content: string): ParseResult {
     return emptyResult(ReportFormat.JUNIT_XML);
   }
 
-  // Handle both <testsuites> wrapper and bare <testsuite> at root
+  // Handle both <testsuites> wrapper and bare <testsuite> at root.
+  // Note: fast-xml-parser's isArray forces 'testsuite' to always be an array,
+  // so raw['testsuite'] is JUnitTestSuite[] — use toArray() to handle both cases.
   const rootSuites = raw['testsuites'] as JUnitTestSuites | undefined;
-  const rootSuite  = raw['testsuite']  as JUnitTestSuite  | undefined;
 
   const suites: JUnitTestSuite[] = rootSuites
     ? toArray(rootSuites.testsuite)
-    : rootSuite ? [rootSuite] : [];
+    : toArray(raw['testsuite'] as JUnitTestSuite | JUnitTestSuite[] | undefined);
 
   const failures: PlaywrightFailure[] = [];
   let totalTests = 0;
