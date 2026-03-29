@@ -4,6 +4,7 @@ import { saveRun, saveFailures, initDb } from './state-store.js';
 import { writeJiraDefects } from './jira-writer.js';
 import { postSlackSummary } from './slack-notifier.js';
 import { loadInstincts } from './instinct-loader.js';
+import { writeSummary } from './summary-writer.js';
 import { TriageCategory, type RunSummary, type TriageResult } from './types.js';
 
 const REPORT_PATH = process.env['PLAYWRIGHT_REPORT_PATH'] ?? './playwright-report.json';
@@ -41,6 +42,7 @@ async function main(): Promise<void> {
 
     await writeJiraDefects(results);
     await postSlackSummary(results, PIPELINE_ID);
+    writeSummary(results, parsed.totalTests, PIPELINE_ID);
 
     console.log('[oracle] triage complete', summarise(results));
   } catch (err) {

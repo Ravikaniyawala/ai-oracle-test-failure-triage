@@ -166,34 +166,6 @@ jobs:
             ].join('\n') + '\n');
           "
 
-      - name: Write GitHub Actions job summary
-        if: always()
-        run: |
-          node -e "
-            const fs = require('fs');
-            const verdict    = '${{ steps.verdict.outputs.verdict }}';
-            const regression = '${{ steps.verdict.outputs.regression-count }}';
-            const newBug     = '${{ steps.verdict.outputs.new-bug-count }}';
-            const flaky      = '${{ steps.verdict.outputs.flaky-count }}';
-            const envIssue   = '${{ steps.verdict.outputs.env-issue-count }}';
-            const icon       = verdict === 'BLOCKED' ? '🔴' : '✅';
-            const summary = [
-              '## ' + icon + ' AI Oracle Triage — ' + verdict,
-              '',
-              '| Category | Count |',
-              '|---|---|',
-              '| 🔴 REGRESSION | ' + regression + ' |',
-              '| 🟠 NEW_BUG    | ' + newBug     + ' |',
-              '| 🟡 FLAKY      | ' + flaky      + ' |',
-              '| 🔵 ENV_ISSUE  | ' + envIssue   + ' |',
-              '',
-              verdict === 'BLOCKED'
-                ? '> **Deploy blocked** — REGRESSION or NEW_BUG detected. Check Slack for full triage report.'
-                : '> **Deploy cleared** — no regressions or new bugs detected.',
-            ].join('\n');
-            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
-          "
-
       - name: Upload Oracle state artifact
         if: always()
         uses: actions/upload-artifact@v4
