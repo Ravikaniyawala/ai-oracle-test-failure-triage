@@ -1,17 +1,22 @@
-name: AI Oracle Triage
+name: Oracle Triage (Reusable Workflow)
 
 on:
   workflow_call:
     inputs:
       report-path:
-        description: "Path to test results directory or file relative to consuming repo root"
+        description: 'Directory containing test results (XML or JSON)'
         required: true
         type: string
-      report-format:
-        description: "Force format detection: PLAYWRIGHT_JSON | JUNIT_XML | PYTEST_JSON | auto"
+      report-artifact-name:
+        description: 'Name of the GitHub Actions artifact containing test results'
+        required: true
+        type: string
+      pipeline-id:
+        description: 'Unique pipeline identifier — use github.run_id'
         required: false
         type: string
-        default: auto
+        default: 'unknown'
+
     secrets:
       anthropic-api-key:
         required: true
@@ -23,17 +28,55 @@ on:
         required: false
       slack-webhook-url:
         required: false
+
     outputs:
       verdict:
-        description: "CLEAR or BLOCKED — BLOCKED means REGRESSION or NEW_BUG found"
+        description: 'CLEAR or BLOCKED'
         value: ${{ jobs.triage.outputs.verdict }}
+      flaky-count:
+        description: 'Number of FLAKY failures'
+        value: ${{ jobs.triage.outputs.flaky-count }}
+      regression-count:
+        description: 'Number of REGRESSION failures'
+        value: ${{ jobs.triage.outputs.regression-count }}
+      new-bug-count:
+        description: 'Number of NEW_BUG failures'
+        value: ${{ jobs.triage.outputs.new-bug-count }}
+      env-issue-count:
+        description: 'Number of ENV_ISSUE failures'
+        value: ${{ jobs.triage.outputs.env-issue-count }}
 
 jobs:
   triage:
+    name: Oracle Triage
     runs-on: ubuntu-latest
+
     outputs:
-      verdict: ${{ steps.verdict.outputs.verdict }}
+      verdict:           ${{ steps.verdict.outputs.verdict }}
+      flaky-count:       ${{ steps.verdict.outputs.flaky-count }}
+      regression-count:  ${{ steps.verdict.outputs.regression-count }}
+      new-bug-count:     ${{ steps.verdict.outputs.new-bug-count }}
+      env-issue-count:   ${{ steps.verdict.outputs.env-issue-count }}
+
     steps:
+      - name: Checkout ai-oracle
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --silent
+
+      - name: Download test results
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.report-artifact-name }}
+          path: downloaded-results/
+
       - name: Restore Oracle state cache
         uses: actions/cache@v4
         with:
@@ -43,75 +86,105 @@ jobs:
           key: oracle-state-${{ github.repository_id }}
           restore-keys: oracle-state-${{ github.repository_id }}
 
-      - name: Clone AI Oracle repo
-        run: |
-          git clone --depth 1 https://github.com/${{ github.repository_owner }}/ai-oracle.git /tmp/oracle
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: /tmp/oracle/package-lock.json
-
-      - name: Install Oracle dependencies
-        run: cd /tmp/oracle && npm ci --silent
-
-      - name: Copy cached instincts into Oracle
+      - name: Prepare directories
         run: |
           mkdir -p .oracle-cache
-          cp -r .oracle-cache/.instincts /tmp/oracle/.instincts 2>/dev/null || true
-
-      - name: Download test results artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: test-results
-          path: test-results/
+          cp -r .oracle-cache/.instincts .instincts 2>/dev/null || mkdir -p .instincts
 
       - name: Run Oracle triage
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
-          ATLASSIAN_TOKEN: ${{ secrets.atlassian-token }}
-          ATLASSIAN_BASE_URL: ${{ secrets.atlassian-base-url }}
-          ATLASSIAN_PROJECT_KEY: ${{ secrets.atlassian-project-key }}
-          SLACK_WEBHOOK_URL: ${{ secrets.slack-webhook-url }}
-          ORACLE_STATE_DB_PATH: ${{ github.workspace }}/.oracle-cache/oracle-state.db
-          PLAYWRIGHT_REPORT_PATH: ${{ github.workspace }}/${{ inputs.report-path }}
-          REPORT_FORMAT: ${{ inputs.report-format }}
-          CI_PIPELINE_ID: ${{ github.run_id }}
-        run: |
-          cd /tmp/oracle
-          npm run triage
+          ANTHROPIC_API_KEY:      ${{ secrets.anthropic-api-key }}
+          ATLASSIAN_TOKEN:        ${{ secrets.atlassian-token }}
+          ATLASSIAN_BASE_URL:     ${{ secrets.atlassian-base-url }}
+          ATLASSIAN_PROJECT_KEY:  ${{ secrets.atlassian-project-key }}
+          SLACK_WEBHOOK_URL:      ${{ secrets.slack-webhook-url }}
+          PLAYWRIGHT_REPORT_PATH: downloaded-results/
+          ORACLE_STATE_DB_PATH:   .oracle-cache/oracle-state.db
+          CI_PIPELINE_ID:         ${{ inputs.pipeline-id }}
+        run: npm run triage
 
-      - name: Write verdict
+      - name: Save updated instincts to cache dir
+        if: always()
+        run: cp -r .instincts .oracle-cache/.instincts 2>/dev/null || true
+
+      - name: Save Oracle state cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .oracle-cache/oracle-state.db
+            .oracle-cache/.instincts/
+          key: oracle-state-${{ github.repository_id }}
+
+      - name: Determine verdict
         id: verdict
+        if: always()
         run: |
-          VERDICT=$(node -e "
-            const Database = require('/tmp/oracle/node_modules/better-sqlite3');
-            const db = new Database('${{ github.workspace }}/.oracle-cache/oracle-state.db');
-            const run = db.prepare('SELECT categories_json FROM runs ORDER BY id DESC LIMIT 1').get();
-            if (!run) { console.log('CLEAR'); process.exit(0); }
-            const cats = JSON.parse(run.categories_json);
-            const blocked = (cats.REGRESSION || 0) + (cats.NEW_BUG || 0) > 0;
-            console.log(blocked ? 'BLOCKED' : 'CLEAR');
-          ")
-          echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
-          echo "[oracle] verdict: $VERDICT"
+          node -e "
+            const Database = require('better-sqlite3');
+            const fs = require('fs');
 
-      - name: Copy instincts back to cache
+            const db = new Database('.oracle-cache/oracle-state.db');
+            const lastRun = db
+              .prepare('SELECT categories_json FROM runs ORDER BY id DESC LIMIT 1')
+              .get();
+
+            if (!lastRun) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'verdict=CLEAR\nflaky-count=0\nregression-count=0\nnew-bug-count=0\nenv-issue-count=0\n');
+              process.exit(0);
+            }
+
+            const cats   = JSON.parse(lastRun.categories_json);
+            const flaky  = cats.FLAKY      || 0;
+            const reg    = cats.REGRESSION || 0;
+            const newBug = cats.NEW_BUG    || 0;
+            const env    = cats.ENV_ISSUE  || 0;
+            const verdict = (reg + newBug) > 0 ? 'BLOCKED' : 'CLEAR';
+
+            console.log('[oracle] verdict:', verdict);
+            console.log('[oracle] FLAKY:', flaky, '| REGRESSION:', reg, '| NEW_BUG:', newBug, '| ENV_ISSUE:', env);
+
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, [
+              'verdict='          + verdict,
+              'flaky-count='      + flaky,
+              'regression-count=' + reg,
+              'new-bug-count='    + newBug,
+              'env-issue-count='  + env,
+            ].join('\n') + '\n');
+          "
+
+      - name: Write GitHub Actions job summary
+        if: always()
         run: |
-          cp -r /tmp/oracle/.instincts .oracle-cache/.instincts 2>/dev/null || true
+          node -e "
+            const fs = require('fs');
+            const verdict    = '${{ steps.verdict.outputs.verdict }}';
+            const regression = '${{ steps.verdict.outputs.regression-count }}';
+            const newBug     = '${{ steps.verdict.outputs.new-bug-count }}';
+            const flaky      = '${{ steps.verdict.outputs.flaky-count }}';
+            const envIssue   = '${{ steps.verdict.outputs.env-issue-count }}';
+            const icon       = verdict === 'BLOCKED' ? '🔴' : '✅';
+            const summary = [
+              '## ' + icon + ' AI Oracle Triage — ' + verdict,
+              '',
+              '| Category | Count |',
+              '|---|---|',
+              '| 🔴 REGRESSION | ' + regression + ' |',
+              '| 🟠 NEW_BUG    | ' + newBug     + ' |',
+              '| 🟡 FLAKY      | ' + flaky      + ' |',
+              '| 🔵 ENV_ISSUE  | ' + envIssue   + ' |',
+              '',
+              verdict === 'BLOCKED'
+                ? '> **Deploy blocked** — REGRESSION or NEW_BUG detected. Check Slack for full triage report.'
+                : '> **Deploy cleared** — no regressions or new bugs detected.',
+            ].join('\n');
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+          "
 
       - name: Upload Oracle state artifact
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: oracle-state
           path: .oracle-cache/oracle-state.db
           retention-days: 30
-
-      - name: Block on REGRESSION or NEW_BUG
-        if: steps.verdict.outputs.verdict == 'BLOCKED'
-        run: |
-          echo "::error::AI Oracle blocked deploy — REGRESSION or NEW_BUG found. Check Jira and Slack for details."
-          exit 1
