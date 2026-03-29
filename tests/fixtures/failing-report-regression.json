@@ -1,0 +1,52 @@
+{
+  "config": {
+    "rootDir": "/app"
+  },
+  "suites": [
+    {
+      "title": "Authentication Suite",
+      "specs": [
+        {
+          "title": "should access protected resource after login",
+          "file": "tests/auth.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 0,
+                  "duration": 2500,
+                  "errors": [
+                    {
+                      "message": "Expected status 200 but received 401 Unauthorized\n\nGET /api/v2/user/profile\nResponse: {\"error\":\"invalid_token\",\"message\":\"The access token has been revoked or is malformed\"}\n\nCall log:\n  - navigating to \"https://app.example.com/dashboard\"\n  - waiting for API response from /api/v2/user/profile\n  - received 401 Unauthorized"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "should refresh auth token on expiry",
+          "file": "tests/auth.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 0,
+                  "duration": 3100,
+                  "errors": [
+                    {
+                      "message": "Expected status 200 but received 403 Forbidden\n\nPOST /api/v2/auth/refresh\nResponse: {\"error\":\"refresh_denied\",\"message\":\"Refresh token endpoint has been deprecated. Use /api/v3/auth/token instead.\"}\n\nCall log:\n  - attempting token refresh via POST /api/v2/auth/refresh\n  - received 403 Forbidden"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

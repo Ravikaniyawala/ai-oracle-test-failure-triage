@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="REST API Tests" tests="3" failures="2" errors="0" time="7.433">
+  <testsuite name="com.example.api.AuthTest" tests="2" failures="2" time="5.210">
+    <testcase name="testLoginTimeout" classname="com.example.api.AuthTest" time="5.000">
+      <failure message="Connection timed out after 5000ms" type="java.net.SocketTimeoutException">
+java.net.SocketTimeoutException: Connection timed out after 5000ms
+  at sun.net.www.http.HttpClient.parseHTTPHeader(HttpClient.java:792)
+  at com.example.api.AuthTest.testLoginTimeout(AuthTest.java:42)
+      </failure>
+    </testcase>
+    <testcase name="testGetUserProfile" classname="com.example.api.AuthTest" time="0.210">
+      <failure message="Expected status code &lt;200&gt; but was &lt;401&gt;" type="java.lang.AssertionError">
+java.lang.AssertionError: Expected status code &lt;200&gt; but was &lt;401&gt;
+Response body: {"error":"invalid_token","message":"Token has been revoked or is malformed"}
+  at io.restassured.internal.ValidatableResponseImpl.statusCode(ValidatableResponseImpl.java:106)
+  at com.example.api.AuthTest.testGetUserProfile(AuthTest.java:67)
+      </failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="com.example.api.HealthTest" tests="1" failures="0" time="2.223">
+    <testcase name="testHealthCheck" classname="com.example.api.HealthTest" time="0.223"/>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(node --import tsx --test tests/*.test.ts)",
+      "Bash(npm install:*)",
+      "Bash(tsx --test tests/**/*.test.ts)",
+      "Bash(npx tsx:*)"
+    ]
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "created": 1711699200.0,
+  "duration": 6.326,
+  "exitcode": 1,
+  "root": "/app",
+  "environment": {},
+  "summary": {
+    "passed": 1,
+    "failed": 2,
+    "total": 3
+  },
+  "tests": [
+    {
+      "nodeid": "tests/test_auth.py::TestLogin::test_valid_credentials",
+      "outcome": "passed",
+      "duration": 0.432
+    },
+    {
+      "nodeid": "tests/test_api.py::TestAPI::test_connection_timeout",
+      "outcome": "failed",
+      "duration": 5.001,
+      "call": {
+        "longrepr": "socket.timeout: timed out\n\nDuring handling of the above exception, another exception occurred:\n\nrequests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='api.example.com', port=443): Max retries exceeded with url: /api/v1/users (Caused by ConnectTimeoutError(<urllib3.connection.HTTPSConnection object>, 'Connection to api.example.com timed out.'))\n\n  tests/test_api.py:23: in test_connection_timeout\n    response = client.get('/api/v1/users', timeout=5)"
+      }
+    },
+    {
+      "nodeid": "tests/test_auth.py::TestLogin::test_token_refresh",
+      "outcome": "failed",
+      "duration": 0.893,
+      "call": {
+        "longrepr": "AssertionError: assert 403 == 200\n  + where 403 = <Response [403]>.status_code\n\nFailed: Expected response code 200 but received 403 Forbidden\nResponse: {\"error\": \"token_endpoint_deprecated\", \"message\": \"Use /api/v3/auth/token instead\"}\n\n  tests/test_auth.py:45: in test_token_refresh\n    assert response.status_code == 200"
+      }
+    }
+  ]
+}

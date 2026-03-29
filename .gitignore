@@ -1,0 +1,7 @@
+node_modules/
+dist/
+oracle-state.db
+.oracle-cache/
+.env
+tests/fixtures/real-report.json
+tests/fixtures/real-report.xml

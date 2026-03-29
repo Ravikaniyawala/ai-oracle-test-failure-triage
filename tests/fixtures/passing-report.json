@@ -1,0 +1,40 @@
+{
+  "config": {
+    "rootDir": "/app"
+  },
+  "suites": [
+    {
+      "title": "Login Suite",
+      "specs": [
+        {
+          "title": "should login successfully",
+          "file": "tests/login.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "passed",
+                  "duration": 1200
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "should show error on invalid credentials",
+          "file": "tests/login.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "passed",
+                  "duration": 800
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

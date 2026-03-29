@@ -1,0 +1,52 @@
+{
+  "config": {
+    "rootDir": "/app"
+  },
+  "suites": [
+    {
+      "title": "Checkout Suite",
+      "specs": [
+        {
+          "title": "should complete payment flow",
+          "file": "tests/checkout.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 1,
+                  "duration": 5000,
+                  "errors": [
+                    {
+                      "message": "net::ERR_CERT_AUTHORITY_INVALID at https://payment-gateway.staging.internal:8443/api/charge\n\nError: SSL certificate problem: unable to get local issuer certificate\n\nCall log:\n  - navigating to checkout page\n  - filling payment form\n  - submitting payment request to https://payment-gateway.staging.internal:8443/api/charge\n  - SSL handshake failed: certificate verify failed"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "should fetch shipping rates",
+          "file": "tests/checkout.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 1,
+                  "duration": 10000,
+                  "errors": [
+                    {
+                      "message": "net::ERR_CONNECTION_REFUSED at http://shipping-service.internal:3001/rates\n\nError: connect ECONNREFUSED 10.0.0.45:3001\n\nCall log:\n  - navigating to shipping selection\n  - requesting shipping rates from http://shipping-service.internal:3001/rates\n  - connection refused: ECONNREFUSED 10.0.0.45:3001"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

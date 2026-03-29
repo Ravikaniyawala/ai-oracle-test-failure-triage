@@ -1,0 +1,56 @@
+# oracle-stage.yml
+# Include this in any GitLab pipeline to add AI Oracle triage.
+#
+# Usage in consuming repo .gitlab-ci.yml:
+#   include:
+#     - project: your-group/ai-oracle
+#       ref: main
+#       file: oracle-stage.yml
+#
+# Required CI/CD variables in the consuming repo:
+#   ANTHROPIC_API_KEY
+#   ATLASSIAN_TOKEN
+#   ATLASSIAN_BASE_URL
+#   ATLASSIAN_PROJECT_KEY
+#   SLACK_WEBHOOK_URL
+#   PLAYWRIGHT_REPORT_PATH  (path to playwright-report.json relative to repo root)
+
+.oracle-triage:
+  stage: oracle
+  image: node:20-alpine
+  when: on_failure
+  allow_failure: true
+  cache:
+    key: oracle-state-$CI_PROJECT_ID
+    paths:
+      - .oracle-cache/oracle-state.db
+      - .oracle-cache/.instincts/
+    policy: pull-push
+  variables:
+    ORACLE_STATE_DB_PATH: .oracle-cache/oracle-state.db
+    PLAYWRIGHT_REPORT_PATH: playwright-report.json
+  before_script:
+    - mkdir -p .oracle-cache
+    - |
+      # Clone the Oracle repo and install deps
+      git clone --depth 1 https://gitlab.com/your-group/ai-oracle.git /tmp/oracle
+      cd /tmp/oracle && npm ci --silent
+      # Copy any cached instincts into the Oracle working directory
+      cp -r $CI_PROJECT_DIR/.oracle-cache/.instincts /tmp/oracle/.instincts 2>/dev/null || true
+  script:
+    - |
+      cd /tmp/oracle
+      PLAYWRIGHT_REPORT_PATH=$CI_PROJECT_DIR/$PLAYWRIGHT_REPORT_PATH \
+      ORACLE_STATE_DB_PATH=$CI_PROJECT_DIR/$ORACLE_STATE_DB_PATH \
+      npx tsx src/index.ts
+      npm run test:live
+      # Copy updated instincts back to cache
+      cp -r .instincts $CI_PROJECT_DIR/.oracle-cache/.instincts 2>/dev/null || true
+  artifacts:
+    when: always
+    paths:
+      - .oracle-cache/oracle-state.db
+    expire_in: 30 days
+
+oracle-triage:
+  extends: .oracle-triage
