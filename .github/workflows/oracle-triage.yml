@@ -11,6 +11,11 @@ on:
         description: 'Name of the GitHub Actions artifact containing test results'
         required: true
         type: string
+      report-format:
+        description: 'Force format detection: PLAYWRIGHT_JSON | JUNIT_XML | PYTEST_JSON | auto'
+        required: false
+        type: string
+        default: auto
       pipeline-id:
         description: 'Unique pipeline identifier — use github.run_id'
         required: false
@@ -105,6 +110,7 @@ jobs:
           ATLASSIAN_PROJECT_KEY:  ${{ secrets.atlassian-project-key }}
           SLACK_WEBHOOK_URL:      ${{ secrets.slack-webhook-url }}
           PLAYWRIGHT_REPORT_PATH: ${{ github.workspace }}/downloaded-results/
+          REPORT_FORMAT:          ${{ inputs.report-format }}
           ORACLE_STATE_DB_PATH:   ${{ github.workspace }}/.oracle-cache/oracle-state.db
           CI_PIPELINE_ID:         ${{ inputs.pipeline-id }}
         run: npm run triage
