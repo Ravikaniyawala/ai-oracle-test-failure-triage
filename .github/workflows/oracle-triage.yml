@@ -1,0 +1,117 @@
+name: AI Oracle Triage
+
+on:
+  workflow_call:
+    inputs:
+      report-path:
+        description: "Path to test results directory or file relative to consuming repo root"
+        required: true
+        type: string
+      report-format:
+        description: "Force format detection: PLAYWRIGHT_JSON | JUNIT_XML | PYTEST_JSON | auto"
+        required: false
+        type: string
+        default: auto
+    secrets:
+      anthropic-api-key:
+        required: true
+      atlassian-token:
+        required: false
+      atlassian-base-url:
+        required: false
+      atlassian-project-key:
+        required: false
+      slack-webhook-url:
+        required: false
+    outputs:
+      verdict:
+        description: "CLEAR or BLOCKED — BLOCKED means REGRESSION or NEW_BUG found"
+        value: ${{ jobs.triage.outputs.verdict }}
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    steps:
+      - name: Restore Oracle state cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .oracle-cache/oracle-state.db
+            .oracle-cache/.instincts/
+          key: oracle-state-${{ github.repository_id }}
+          restore-keys: oracle-state-${{ github.repository_id }}
+
+      - name: Clone AI Oracle repo
+        run: |
+          git clone --depth 1 https://github.com/${{ github.repository_owner }}/ai-oracle.git /tmp/oracle
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: /tmp/oracle/package-lock.json
+
+      - name: Install Oracle dependencies
+        run: cd /tmp/oracle && npm ci --silent
+
+      - name: Copy cached instincts into Oracle
+        run: |
+          mkdir -p .oracle-cache
+          cp -r .oracle-cache/.instincts /tmp/oracle/.instincts 2>/dev/null || true
+
+      - name: Download test results artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+
+      - name: Run Oracle triage
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+          ATLASSIAN_TOKEN: ${{ secrets.atlassian-token }}
+          ATLASSIAN_BASE_URL: ${{ secrets.atlassian-base-url }}
+          ATLASSIAN_PROJECT_KEY: ${{ secrets.atlassian-project-key }}
+          SLACK_WEBHOOK_URL: ${{ secrets.slack-webhook-url }}
+          ORACLE_STATE_DB_PATH: ${{ github.workspace }}/.oracle-cache/oracle-state.db
+          PLAYWRIGHT_REPORT_PATH: ${{ github.workspace }}/${{ inputs.report-path }}
+          REPORT_FORMAT: ${{ inputs.report-format }}
+          CI_PIPELINE_ID: ${{ github.run_id }}
+        run: |
+          cd /tmp/oracle
+          npm run triage
+
+      - name: Write verdict
+        id: verdict
+        run: |
+          VERDICT=$(node -e "
+            const Database = require('/tmp/oracle/node_modules/better-sqlite3');
+            const db = new Database('${{ github.workspace }}/.oracle-cache/oracle-state.db');
+            const run = db.prepare('SELECT categories_json FROM runs ORDER BY id DESC LIMIT 1').get();
+            if (!run) { console.log('CLEAR'); process.exit(0); }
+            const cats = JSON.parse(run.categories_json);
+            const blocked = (cats.REGRESSION || 0) + (cats.NEW_BUG || 0) > 0;
+            console.log(blocked ? 'BLOCKED' : 'CLEAR');
+          ")
+          echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
+          echo "[oracle] verdict: $VERDICT"
+
+      - name: Copy instincts back to cache
+        run: |
+          cp -r /tmp/oracle/.instincts .oracle-cache/.instincts 2>/dev/null || true
+
+      - name: Upload Oracle state artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oracle-state
+          path: .oracle-cache/oracle-state.db
+          retention-days: 30
+
+      - name: Block on REGRESSION or NEW_BUG
+        if: steps.verdict.outputs.verdict == 'BLOCKED'
+        run: |
+          echo "::error::AI Oracle blocked deploy — REGRESSION or NEW_BUG found. Check Jira and Slack for details."
+          exit 1

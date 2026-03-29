@@ -7,7 +7,10 @@ import { loadInstincts } from './instinct-loader.js';
 import { TriageCategory, type RunSummary, type TriageResult } from './types.js';
 
 const REPORT_PATH = process.env['PLAYWRIGHT_REPORT_PATH'] ?? './playwright-report.json';
-const PIPELINE_ID = process.env['CI_PIPELINE_ID'] ?? `local-${Date.now()}`;
+const PIPELINE_ID =
+  process.env['CI_PIPELINE_ID'] ??
+  process.env['GITHUB_RUN_ID'] ??
+  `local-${Date.now()}`;
 
 async function main(): Promise<void> {
   try {

@@ -1,9 +1,9 @@
 # AI Oracle
 
-AI-powered test failure triage for GitLab CI. Reads test reports after a failed
-pipeline run, classifies each failure, opens Jira defects, and posts a Slack
-summary — so your team knows exactly what broke and why before anyone looks at
-the logs.
+AI-powered test failure triage for GitLab CI and GitHub Actions. Reads test
+reports after a failed pipeline run, classifies each failure, opens Jira defects,
+and posts a Slack summary — so your team knows exactly what broke and why before
+anyone looks at the logs.
 
 ---
 
@@ -49,7 +49,7 @@ REPORT_FORMAT=PLAYWRIGHT_JSON
 
 ## Quick start
 
-### 1. Add Oracle to your GitLab pipeline
+### GitLab CI
 
 In your consuming repo's `.gitlab-ci.yml`:
 
@@ -71,12 +71,10 @@ oracle-triage:
     - job: your-e2e-job
       artifacts: true
   variables:
-    PLAYWRIGHT_REPORT_PATH: playwright-report/results.json
+    PLAYWRIGHT_REPORT_PATH: test-results/
 ```
 
-### 2. Add CI/CD variables
-
-In the consuming repo: **Settings → CI/CD → Variables**
+Add variables in **Settings → CI/CD → Variables**:
 
 | Variable | Description | Protected | Masked |
 |---|---|---|---|
@@ -85,6 +83,56 @@ In the consuming repo: **Settings → CI/CD → Variables**
 | `ATLASSIAN_BASE_URL` | e.g. `https://your-org.atlassian.net` | no | no |
 | `ATLASSIAN_PROJECT_KEY` | Jira project key e.g. `QA` | no | no |
 | `SLACK_WEBHOOK_URL` | Incoming webhook URL | yes | yes |
+
+---
+
+### GitHub Actions
+
+In your consuming repo's workflow file:
+
+```yaml
+jobs:
+  your-test-job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: npx playwright test
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+
+  oracle-triage:
+    needs: [your-test-job]
+    if: failure()
+    uses: your-org/ai-oracle/.github/workflows/oracle-triage.yml@main
+    with:
+      report-path: test-results/results.json
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+      atlassian-token: ${{ secrets.ATLASSIAN_TOKEN }}
+      atlassian-base-url: ${{ secrets.ATLASSIAN_BASE_URL }}
+      atlassian-project-key: ${{ secrets.ATLASSIAN_PROJECT_KEY }}
+      slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+```
+
+The `verdict` output (`CLEAR` or `BLOCKED`) can be used by downstream jobs:
+
+```yaml
+  deploy:
+    needs: [oracle-triage]
+    if: needs.oracle-triage.outputs.verdict == 'CLEAR'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deploy approved — no regressions found"
+```
+
+Add the same secrets in **Settings → Secrets and variables → Actions**.
+
+---
 
 ### 3. Enable the JSON reporter in Playwright
 
@@ -162,6 +210,8 @@ src/
   slack-notifier.ts  — Slack webhook integration
   learn.ts           — instinct generation script
 oracle-stage.yml     — GitLab CI stage (include this in consuming repos)
+.github/workflows/
+  oracle-triage.yml  — reusable GitHub Actions workflow
 schemas/
   triage-result.json — JSON schema for AI response validation
 tests/

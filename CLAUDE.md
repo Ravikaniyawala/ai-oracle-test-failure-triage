@@ -13,6 +13,7 @@ writes Jira defects, posts Slack alerts, and persists learnings to SQLite.
 - src/triage.ts — calls Anthropic API with failure data + instinct context
 - src/state-store.ts — SQLite wrapper at ORACLE_STATE_DB_PATH
 - oracle-stage.yml — the GitLab CI stage definition consumed by other repos
+- .github/workflows/oracle-triage.yml — reusable GitHub Actions workflow, equivalent of oracle-stage.yml for GitHub CI
 - .instincts/ — learned pattern files, populated by npm run learn
 
 ## Environment variables (all required in CI)
@@ -53,3 +54,7 @@ Table: instinct_feedback (id, instinct_id, was_correct, timestamp)
 - npm run triage:dry    — run triage, print JSON to stdout, skip Jira + Slack
 - npm run build         — compile TypeScript to dist/ for production
 - npm run typecheck     — tsc --noEmit, no output, types only
+
+## CI environment notes
+- CI_PIPELINE_ID is read from CI_PIPELINE_ID (GitLab) or GITHUB_RUN_ID (GitHub Actions)
+- index.ts resolves both automatically — no change needed in consuming repo config
