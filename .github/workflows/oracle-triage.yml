@@ -61,15 +61,21 @@ jobs:
     steps:
       - name: Checkout ai-oracle
         uses: actions/checkout@v4
+        with:
+          repository: Ravikaniyawala/ai-oracle-test-failure-triage
+          ref: main
+          path: oracle
 
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: oracle/package-lock.json
 
       - name: Install dependencies
         run: npm ci --silent
+        working-directory: oracle
 
       - name: Download test results
         uses: actions/download-artifact@v4
@@ -89,7 +95,7 @@ jobs:
       - name: Prepare directories
         run: |
           mkdir -p .oracle-cache
-          cp -r .oracle-cache/.instincts .instincts 2>/dev/null || mkdir -p .instincts
+          cp -r .oracle-cache/.instincts oracle/.instincts 2>/dev/null || mkdir -p oracle/.instincts
 
       - name: Run Oracle triage
         env:
@@ -98,14 +104,15 @@ jobs:
           ATLASSIAN_BASE_URL:     ${{ secrets.atlassian-base-url }}
           ATLASSIAN_PROJECT_KEY:  ${{ secrets.atlassian-project-key }}
           SLACK_WEBHOOK_URL:      ${{ secrets.slack-webhook-url }}
-          PLAYWRIGHT_REPORT_PATH: downloaded-results/
-          ORACLE_STATE_DB_PATH:   .oracle-cache/oracle-state.db
+          PLAYWRIGHT_REPORT_PATH: ${{ github.workspace }}/downloaded-results/
+          ORACLE_STATE_DB_PATH:   ${{ github.workspace }}/.oracle-cache/oracle-state.db
           CI_PIPELINE_ID:         ${{ inputs.pipeline-id }}
         run: npm run triage
+        working-directory: oracle
 
       - name: Save updated instincts to cache dir
         if: always()
-        run: cp -r .instincts .oracle-cache/.instincts 2>/dev/null || true
+        run: cp -r oracle/.instincts .oracle-cache/.instincts 2>/dev/null || true
 
       - name: Save Oracle state cache
         if: always()
@@ -121,7 +128,7 @@ jobs:
         if: always()
         run: |
           node -e "
-            const Database = require('better-sqlite3');
+            const Database = require('./oracle/node_modules/better-sqlite3');
             const fs = require('fs');
 
             const db = new Database('.oracle-cache/oracle-state.db');
