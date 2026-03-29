@@ -89,13 +89,13 @@ jobs:
           path: downloaded-results/
 
       - name: Restore Oracle state cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             .oracle-cache/oracle-state.db
             .oracle-cache/.instincts/
-          key: oracle-state-${{ github.repository_id }}
-          restore-keys: oracle-state-${{ github.repository_id }}
+          key: oracle-state-${{ github.repository_id }}-${{ github.run_id }}
+          restore-keys: oracle-state-${{ github.repository_id }}-
 
       - name: Prepare directories
         run: |
@@ -127,7 +127,7 @@ jobs:
           path: |
             .oracle-cache/oracle-state.db
             .oracle-cache/.instincts/
-          key: oracle-state-${{ github.repository_id }}
+          key: oracle-state-${{ github.repository_id }}-${{ github.run_id }}
 
       - name: Determine verdict
         id: verdict
