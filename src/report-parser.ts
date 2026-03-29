@@ -1,6 +1,6 @@
-import { readFileSync } from 'fs';
+import { readFileSync, statSync, readdirSync } from 'fs';
 import { createHash } from 'crypto';
-import { extname } from 'path';
+import { extname, join } from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import { type PlaywrightFailure, ReportFormat, type ParseResult } from './types.js';
 
@@ -9,6 +9,28 @@ import { type PlaywrightFailure, ReportFormat, type ParseResult } from './types.
 // ---------------------------------------------------------------------------
 
 export function parseReport(reportPath: string): ParseResult {
+  // If path is a directory, scan for XML files and merge results
+  try {
+    const stat = statSync(reportPath);
+    if (stat.isDirectory()) {
+      const xmlFiles = readdirSync(reportPath).filter(f => f.endsWith('.xml'));
+      if (xmlFiles.length === 0) {
+        console.warn(`[oracle] no XML files found in directory ${reportPath}`);
+        return emptyResult(ReportFormat.UNKNOWN);
+      }
+      console.log(`[oracle] scanning directory: found ${xmlFiles.length} XML file(s)`);
+      const parts = xmlFiles.map(f => parseReport(join(reportPath, f)));
+      return {
+        failures:       parts.flatMap(r => r.failures),
+        detectedFormat: ReportFormat.JUNIT_XML,
+        totalTests:     parts.reduce((sum, r) => sum + r.totalTests, 0),
+        totalFailures:  parts.reduce((sum, r) => sum + r.totalFailures, 0),
+      };
+    }
+  } catch {
+    // path does not exist or is unreadable — fall through to file read below
+  }
+
   let content: string;
   try {
     content = readFileSync(reportPath, 'utf8');
