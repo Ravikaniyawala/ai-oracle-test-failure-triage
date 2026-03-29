@@ -52,13 +52,6 @@ async function triageBatch(
     }));
   } catch (err) {
     console.error('[oracle] triage batch failed:', (err as Error).message);
-    return failures.map(f => ({
-      ...f,
-      category:     TriageCategory.FLAKY,
-      confidence:   0,
-      reasoning:    'Oracle error — could not classify',
-      suggestedFix: 'Review manually',
-      createJira:   false,
-    }));
+    throw err;
   }
 }

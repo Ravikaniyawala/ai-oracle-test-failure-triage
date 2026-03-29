@@ -13,6 +13,11 @@ const PIPELINE_ID =
   `local-${Date.now()}`;
 
 async function main(): Promise<void> {
+  if (!process.env['ANTHROPIC_API_KEY']) {
+    console.error('[oracle] ANTHROPIC_API_KEY is not set — cannot triage');
+    process.exit(1);
+  }
+
   try {
     console.log('[oracle] starting triage run', { PIPELINE_ID, REPORT_PATH });
 
@@ -39,9 +44,9 @@ async function main(): Promise<void> {
 
     console.log('[oracle] triage complete', summarise(results));
   } catch (err) {
-    console.error('[oracle] fatal error (pipeline continues):', err);
+    console.error('[oracle] fatal error:', err);
+    process.exit(1);
   }
-  process.exit(0);
 }
 
 function summarise(results: TriageResult[]): RunSummary {
