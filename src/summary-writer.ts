@@ -22,8 +22,7 @@ export function writeSummary(
   results: TriageResult[],
   totalTests: number,
   pipelineId: string,
-): void {
-  if (!SUMMARY_PATH) return;
+): string {
 
   const blocked = results.some(
     r => r.category === TriageCategory.REGRESSION || r.category === TriageCategory.NEW_BUG,
@@ -106,7 +105,9 @@ export function writeSummary(
   }
 
   lines.push('');
-  appendFileSync(SUMMARY_PATH, lines.join('\n') + '\n');
+  const markdown = lines.join('\n') + '\n';
+  if (SUMMARY_PATH) appendFileSync(SUMMARY_PATH, markdown);
+  return markdown;
 }
 
 function countByCategory(results: TriageResult[]): Record<TriageCategory, number> {

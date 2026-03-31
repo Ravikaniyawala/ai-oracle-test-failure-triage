@@ -113,6 +113,8 @@ jobs:
           REPORT_FORMAT:          ${{ inputs.report-format }}
           ORACLE_STATE_DB_PATH:   ${{ github.workspace }}/.oracle-cache/oracle-state.db
           CI_PIPELINE_ID:         ${{ inputs.pipeline-id }}
+          GITHUB_TOKEN:           ${{ github.token }}
+          GITHUB_REF_NAME:        ${{ github.ref_name }}
         run: npm run triage
         working-directory: oracle
 

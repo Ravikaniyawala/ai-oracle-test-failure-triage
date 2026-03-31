@@ -9,6 +9,7 @@
 #
 # Required CI/CD variables in the consuming repo:
 #   ANTHROPIC_API_KEY
+#   GITLAB_TOKEN            (project/group access token with api scope — for MR comments)
 #   ATLASSIAN_TOKEN
 #   ATLASSIAN_BASE_URL
 #   ATLASSIAN_PROJECT_KEY
@@ -42,6 +43,11 @@
       cd /tmp/oracle
       PLAYWRIGHT_REPORT_PATH=$CI_PROJECT_DIR/$PLAYWRIGHT_REPORT_PATH \
       ORACLE_STATE_DB_PATH=$CI_PROJECT_DIR/$ORACLE_STATE_DB_PATH \
+      GITLAB_TOKEN=$GITLAB_TOKEN \
+      CI_PROJECT_ID=$CI_PROJECT_ID \
+      CI_API_V4_URL=$CI_API_V4_URL \
+      CI_MERGE_REQUEST_IID=$CI_MERGE_REQUEST_IID \
+      CI_COMMIT_BRANCH=$CI_COMMIT_BRANCH \
       npx tsx src/index.ts
       npm run test:live
       # Copy updated instincts back to cache
