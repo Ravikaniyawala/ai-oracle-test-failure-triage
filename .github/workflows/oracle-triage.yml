@@ -55,6 +55,9 @@ jobs:
   triage:
     name: Oracle Triage
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write   # post PR comments
+      contents: read         # checkout oracle repo
 
     outputs:
       verdict:           ${{ steps.verdict.outputs.verdict }}
@@ -115,6 +118,7 @@ jobs:
           CI_PIPELINE_ID:         ${{ inputs.pipeline-id }}
           GITHUB_TOKEN:           ${{ github.token }}
           GITHUB_REF_NAME:        ${{ github.ref_name }}
+          GITHUB_REPOSITORY:      ${{ github.repository }}
         run: npm run triage
         working-directory: oracle
 
