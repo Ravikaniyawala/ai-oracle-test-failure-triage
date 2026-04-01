@@ -55,6 +55,8 @@ jobs:
   triage:
     name: Oracle Triage
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     permissions:
       pull-requests: write   # post PR comments
       contents: read         # checkout oracle repo
@@ -74,7 +76,7 @@ jobs:
           ref: main
           path: oracle
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 24
         uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -84,6 +86,8 @@ jobs:
       - name: Install dependencies
         run: npm ci --silent
         working-directory: oracle
+        env:
+          npm_config_cache: ${{ github.workspace }}/.npm-node24
 
       - name: Download test results
         uses: actions/download-artifact@v4
@@ -138,28 +142,23 @@ jobs:
       - name: Determine verdict
         id: verdict
         if: always()
-        working-directory: oracle
         run: |
           node -e "
-            const Database = require('better-sqlite3');
             const fs = require('fs');
+            const path = 'oracle/oracle-verdict.json';
 
-            const db = new Database('${{ github.workspace }}/.oracle-cache/oracle-state.db');
-            const lastRun = db
-              .prepare('SELECT categories_json FROM runs ORDER BY id DESC LIMIT 1')
-              .get();
-
-            if (!lastRun) {
-              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'verdict=CLEAR\nflaky-count=0\nregression-count=0\nnew-bug-count=0\nenv-issue-count=0\n');
+            if (!fs.existsSync(path)) {
+              console.log('[oracle] no verdict file found — defaulting to BLOCKED (safe fallback)');
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, 'verdict=BLOCKED\nflaky-count=0\nregression-count=0\nnew-bug-count=0\nenv-issue-count=0\n');
               process.exit(0);
             }
 
-            const cats   = JSON.parse(lastRun.categories_json);
-            const flaky  = cats.FLAKY      || 0;
-            const reg    = cats.REGRESSION || 0;
-            const newBug = cats.NEW_BUG    || 0;
-            const env    = cats.ENV_ISSUE  || 0;
-            const verdict = (reg + newBug) > 0 ? 'BLOCKED' : 'CLEAR';
+            const v = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const verdict  = v.verdict  || 'BLOCKED';
+            const flaky    = v.FLAKY      || 0;
+            const reg      = v.REGRESSION || 0;
+            const newBug   = v.NEW_BUG    || 0;
+            const env      = v.ENV_ISSUE  || 0;
 
             console.log('[oracle] verdict:', verdict);
             console.log('[oracle] FLAKY:', flaky, '| REGRESSION:', reg, '| NEW_BUG:', newBug, '| ENV_ISSUE:', env);

@@ -6,6 +6,7 @@ import { postSlackSummary } from './slack-notifier.js';
 import { loadInstincts } from './instinct-loader.js';
 import { writeSummary } from './summary-writer.js';
 import { postPrComment } from './pr-commenter.js';
+import { writeFileSync } from 'fs';
 import { TriageCategory, type RunSummary, type TriageResult } from './types.js';
 
 const REPORT_PATH = process.env['PLAYWRIGHT_REPORT_PATH'] ?? './playwright-report.json';
@@ -30,6 +31,9 @@ async function main(): Promise<void> {
 
     if (parsed.failures.length === 0) {
       console.log('[oracle] no failures found, exiting');
+      writeFileSync('oracle-verdict.json', JSON.stringify({
+        verdict: 'CLEAR', FLAKY: 0, REGRESSION: 0, NEW_BUG: 0, ENV_ISSUE: 0,
+      }, null, 2));
       process.exit(0);
     }
 
@@ -46,7 +50,15 @@ async function main(): Promise<void> {
     const markdown = writeSummary(results, parsed.totalTests, PIPELINE_ID);
     await postPrComment(markdown);
 
-    console.log('[oracle] triage complete', summarise(results));
+    const summary = summarise(results);
+    const verdict = (summary[TriageCategory.REGRESSION] + summary[TriageCategory.NEW_BUG]) > 0
+      ? 'BLOCKED' : 'CLEAR';
+    writeFileSync(
+      'oracle-verdict.json',
+      JSON.stringify({ verdict, ...summary }, null, 2),
+    );
+
+    console.log('[oracle] triage complete', summary);
   } catch (err) {
     console.error('[oracle] fatal error:', err);
     process.exit(1);
