@@ -18,7 +18,7 @@
 
 .oracle-triage:
   stage: oracle
-  image: node:20-alpine
+  image: node:24-alpine
   when: on_failure
   allow_failure: true
   cache:
