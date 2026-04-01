@@ -83,8 +83,11 @@ jobs:
           cache: 'npm'
           cache-dependency-path: oracle/package-lock.json
 
+      - name: Install build tools for native modules
+        run: sudo apt-get install -y python3 make g++
+
       - name: Install dependencies
-        run: npm ci --silent
+        run: npm ci
         working-directory: oracle
         env:
           npm_config_cache: ${{ github.workspace }}/.npm-node24
