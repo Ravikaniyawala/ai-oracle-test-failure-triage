@@ -11,10 +11,14 @@ anyone looks at the logs.
 
 1. Your E2E or API test job runs and fails
 2. The Oracle job triggers automatically (`when: on_failure`)
-3. Oracle reads the test report and classifies every failure into one of four categories
-4. Jira defects are opened for regressions and new bugs (confidence > 0.7)
-5. A Slack summary is posted with category counts and defect links
-6. Results are persisted to SQLite so patterns are learned over successive runs
+3. Oracle reads the test report and classifies every failure into one of four categories using Claude
+4. A policy engine decides which actions to take — Jira defects for regressions and new bugs (confidence > 0.7), Slack summary for every run
+5. Actions are fingerprinted and deduplicated — re-running the same pipeline never creates duplicate Jira tickets or Slack posts
+6. Results and action audit trail are persisted to SQLite so patterns are learned over successive runs
+
+### Separation of concerns
+
+The LLM **only classifies** — it outputs a category, confidence score, reasoning, and suggested fix for each failure. It does not decide whether to open a Jira ticket. That decision belongs to the **policy engine** (`src/policy-engine.ts`), which applies deterministic rules and persists every decision with its full audit context to the `actions` table.
 
 ### Failure categories
 
@@ -199,24 +203,32 @@ injected into the prompt on future runs, improving accuracy for known patterns.
 
 ```
 src/
-  types.ts           — shared interfaces and enums
-  index.ts           — entry point
-  report-parser.ts   — multi-format parser
-  triage.ts          — AI classification
+  types.ts           — shared interfaces, enums, and action types
+  index.ts           — entry point and orchestration flow
+  report-parser.ts   — multi-format parser (Playwright, JUnit, pytest)
+  triage.ts          — AI classification via Claude API
   prompt-builder.ts  — prompt assembly
-  state-store.ts     — SQLite persistence
+  policy-engine.ts   — action proposal, fingerprinting, and decision logic
+  state-store.ts     — SQLite persistence (runs, failures, actions audit trail)
   instinct-loader.ts — loads .instincts/ into prompt context
-  jira-writer.ts     — Jira REST API integration
+  jira-writer.ts     — Jira REST API integration (single-defect interface)
   slack-notifier.ts  — Slack webhook integration
   learn.ts           — instinct generation script
 oracle-stage.yml     — GitLab CI stage (include this in consuming repos)
 .github/workflows/
   oracle-triage.yml  — reusable GitHub Actions workflow
-schemas/
-  triage-result.json — JSON schema for AI response validation
 tests/
   fixtures/          — synthetic test reports for all supported formats
 ```
+
+### SQLite schema
+
+| Table | Purpose |
+|---|---|
+| `runs` | One row per pipeline run — timestamp, pipeline ID, failure counts |
+| `failures` | One row per triaged failure — category, confidence, error hash |
+| `actions` | Audit trail of every proposed and executed action — fingerprint, verdict, payload, confidence, decision reason, execution result |
+| `instinct_feedback` | Correctness feedback for learned instinct patterns |
 
 ---
 

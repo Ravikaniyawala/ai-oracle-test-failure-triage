@@ -34,7 +34,6 @@ export interface TriageResult extends PlaywrightFailure {
   confidence:   number;
   reasoning:    string;
   suggestedFix: string;
-  createJira:   boolean;
 }
 
 export interface RunSummary {
@@ -51,6 +50,41 @@ export interface TriageApiResponse {
     confidence:    number;
     reasoning:     string;
     suggested_fix: string;
-    create_jira:   boolean;
   }>;
+}
+
+// ── Policy / orchestration types ─────────────────────────────────────────────
+
+export type ActionType      = 'create_jira' | 'notify_slack' | 'quarantine_test';
+export type ActionScope     = 'failure' | 'cluster' | 'run';
+export type DecisionVerdict = 'approved' | 'rejected' | 'deferred';
+
+export interface ActionProposal {
+  type:        ActionType;
+  scope:       ActionScope;
+  scopeId:     string;
+  failureId:   number | null;
+  clusterKey:  string | null;
+  runId:       number;
+  pipelineId:  string;
+  source:      'policy';
+  fingerprint: string;
+}
+
+export interface Decision {
+  proposal:   ActionProposal;
+  verdict:    DecisionVerdict;
+  confidence: number;
+}
+
+export interface ActionExecution {
+  ok:        boolean;
+  detail:    string;
+  timestamp: string;
+}
+
+export interface JiraCreated {
+  testName: string;
+  category: TriageCategory;
+  key:      string;
 }
