@@ -63,7 +63,7 @@ export type ActionType =
   | 'request_human_review';
 
 export type ActionScope     = 'failure' | 'cluster' | 'run';
-export type DecisionVerdict = 'approved' | 'rejected' | 'deferred';
+export type DecisionVerdict = 'approved' | 'rejected' | 'deferred' | 'held';
 
 export interface ActionProposal {
   type:        ActionType;
@@ -73,7 +73,7 @@ export interface ActionProposal {
   clusterKey:  string | null;
   runId:       number;
   pipelineId:  string;
-  source:      'policy';
+  source:      'policy' | 'agent';
   fingerprint: string;
 }
 
