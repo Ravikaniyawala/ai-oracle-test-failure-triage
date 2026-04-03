@@ -14,7 +14,8 @@ anyone looks at the logs.
 3. Oracle reads the test report and classifies every failure into one of four categories using Claude
 4. A policy engine decides which actions to take — Jira defects for regressions and new bugs (confidence > 0.7), Slack summary for every run
 5. Actions are fingerprinted and deduplicated — re-running the same pipeline never creates duplicate Jira tickets or Slack posts
-6. Results and action audit trail are persisted to SQLite so patterns are learned over successive runs
+6. Historical pattern stats are logged per failure — showing how many times an action was taken, how many Jiras were duplicates, and whether retries have worked before
+7. Results and action audit trail are persisted to SQLite so patterns are learned over successive runs
 
 ### Operating modes
 
@@ -138,6 +139,35 @@ jobs:
       slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
 ```
 
+The `verdict` output (`CLEAR` or `BLOCKED`) can be used by downstream jobs. The full `oracle-verdict.json` structure is:
+
+```json
+{
+  "verdict": "BLOCKED",
+  "FLAKY": 1,
+  "REGRESSION": 1,
+  "NEW_BUG": 0,
+  "ENV_ISSUE": 0,
+  "failures": [
+    {
+      "testName": "checkout applies voucher",
+      "errorHash": "a3f9c1d2",
+      "category": "REGRESSION",
+      "confidence": 0.92,
+      "pattern_stats": {
+        "actionCount": 5,
+        "jiraCreatedCount": 3,
+        "jiraDuplicateCount": 2,
+        "retryPassedCount": 2,
+        "retryFailedCount": 1
+      }
+    }
+  ]
+}
+```
+
+The top-level `verdict` and category counts are unchanged from previous versions. The `failures[]` array is additive.
+
 The `verdict` output (`CLEAR` or `BLOCKED`) can be used by downstream jobs:
 
 ```yaml
@@ -256,6 +286,27 @@ The policy engine applies confidence thresholds to `retry_test` proposals:
 - **< 0.5** → rejected
 
 All proposals are recorded in `agent_proposals` and linked to the `actions` ledger regardless of verdict.
+
+---
+
+## Historical pattern stats (explainability)
+
+On every normal CI triage run, Oracle looks up the history for each failure pattern (`testName + errorHash`) and logs it before any decisions are made. This gives operators full context — no ML, no scoring, just counts from existing data.
+
+```
+[history] checkout applies voucher (a3f9c1d2)
+  actions=5  jira_created=3  jira_duplicates=2  retry_passed=2  retry_failed=1
+```
+
+| Field | What it answers |
+|---|---|
+| `actions` | Have we seen this failure pattern before? |
+| `jira_created` | Did we already raise a Jira for it? |
+| `jira_duplicates` | Were those Jiras useful, or were they closed as duplicates? |
+| `retry_passed` | Does retrying this test usually work? |
+| `retry_failed` | Or does it stay broken after a retry? |
+
+These stats are **read-only** — they are surfaced for explainability and never influence decisions. They are also written per failure into `oracle-verdict.json` under a `failures[]` array alongside the existing top-level verdict and category counts.
 
 ---
 
