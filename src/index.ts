@@ -61,8 +61,13 @@ async function main(): Promise<void> {
       const failureId = failureIds[i] as number;
 
       for (const proposal of proposeFailureActions(result, failureId, runId, PIPELINE_ID)) {
-        const decision = decide(proposal, result.confidence);
-        saveAction(runId, proposal, decision);
+        const decision  = decide(proposal, result.confidence);
+        const inserted  = saveAction(runId, proposal, decision);
+
+        if (!inserted) {
+          console.log(`[oracle] skipping duplicate action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
+          continue;
+        }
 
         if (decision.verdict !== 'approved') continue;
 
@@ -85,7 +90,12 @@ async function main(): Promise<void> {
     // 4. Propose + decide run-level actions
     for (const proposal of proposeRunActions(runId, PIPELINE_ID)) {
       const decision = decide(proposal, 1.0);
-      saveAction(runId, proposal, decision);
+      const inserted = saveAction(runId, proposal, decision);
+
+      if (!inserted) {
+        console.log(`[oracle] skipping duplicate action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
+        continue;
+      }
 
       if (decision.verdict !== 'approved') continue;
 

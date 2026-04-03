@@ -26,8 +26,12 @@ export function computeFingerprint(
 /**
  * Propose actions for a single triaged failure.
  * Rules:
- *   - create_jira  → REGRESSION or NEW_BUG with confidence > 0.7
+ *   - create_jira     → REGRESSION or NEW_BUG with confidence > 0.7
  *   - quarantine_test → FLAKY with retries >= 2
+ *
+ * Fingerprints are keyed on testName + errorHash (not the DB row id) so they
+ * remain stable across re-runs of the same pipeline, preventing duplicate
+ * Jira tickets when the same test failure recurs.
  */
 export function proposeFailureActions(
   result: TriageResult,
@@ -36,6 +40,8 @@ export function proposeFailureActions(
   pipelineId: string,
 ): ActionProposal[] {
   const proposals: ActionProposal[] = [];
+  // stable identity for this specific failure regardless of which run it appears in
+  const stableId = `${result.testName}:${result.errorHash}`;
 
   if (
     (result.category === TriageCategory.REGRESSION ||
@@ -45,13 +51,13 @@ export function proposeFailureActions(
     proposals.push({
       type:        'create_jira',
       scope:       'failure',
-      scopeId:     String(failureId),
+      scopeId:     stableId,
       failureId,
       clusterKey:  null,
       runId,
       pipelineId,
       source:      'policy',
-      fingerprint: computeFingerprint('create_jira', 'failure', String(failureId)),
+      fingerprint: computeFingerprint('create_jira', 'failure', stableId),
     });
   }
 
@@ -59,13 +65,13 @@ export function proposeFailureActions(
     proposals.push({
       type:        'quarantine_test',
       scope:       'failure',
-      scopeId:     String(failureId),
+      scopeId:     stableId,
       failureId,
       clusterKey:  null,
       runId,
       pipelineId,
       source:      'policy',
-      fingerprint: computeFingerprint('quarantine_test', 'failure', String(failureId)),
+      fingerprint: computeFingerprint('quarantine_test', 'failure', stableId),
     });
   }
 

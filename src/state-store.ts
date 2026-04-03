@@ -93,13 +93,18 @@ export function saveFailures(runId: number, results: TriageResult[]): number[] {
 /**
  * Persist a proposed action and its decision verdict.
  * INSERT OR IGNORE ensures duplicate fingerprints are silently skipped.
+ *
+ * Returns true if the row was newly inserted, false if it already existed
+ * (duplicate fingerprint).  Callers MUST check this return value before
+ * executing the action — a false return means the action was already handled
+ * in a previous run and must not be re-executed.
  */
 export function saveAction(
   runId: number,
   proposal: ActionProposal,
   decision: Decision,
-): void {
-  db.prepare(
+): boolean {
+  const info = db.prepare(
     `INSERT OR IGNORE INTO actions
        (run_id, failure_id, cluster_key, scope, action_type, action_fingerprint, source, verdict)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
@@ -113,6 +118,7 @@ export function saveAction(
     proposal.source,
     decision.verdict,
   );
+  return info.changes === 1;
 }
 
 /**
