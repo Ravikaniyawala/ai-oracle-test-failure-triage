@@ -16,9 +16,21 @@ anyone looks at the logs.
 5. Actions are fingerprinted and deduplicated — re-running the same pipeline never creates duplicate Jira tickets or Slack posts
 6. Results and action audit trail are persisted to SQLite so patterns are learned over successive runs
 
+### Operating modes
+
+Oracle has three distinct operating modes, evaluated in priority order:
+
+| Mode | Trigger | Purpose |
+|---|---|---|
+| **Feedback ingestion** | `ORACLE_FEEDBACK_PATH` set | Ingest operator feedback (Jira outcomes, classification corrections) into SQLite. No API key required. |
+| **Agent proposal** | `ORACLE_AGENT_PROPOSALS_PATH` set | Process action proposals from AI agents. Policy engine decides each proposal; approved actions are executed. No API key required. |
+| **Normal CI triage** | Neither path set | Full triage: parse report → classify with Claude → propose and execute actions → post Slack + PR comment. |
+
 ### Separation of concerns
 
 The LLM **only classifies** — it outputs a category, confidence score, reasoning, and suggested fix for each failure. It does not decide whether to open a Jira ticket. That decision belongs to the **policy engine** (`src/policy-engine.ts`), which applies deterministic rules and persists every decision with its full audit context to the `actions` table.
+
+**Agents are never trusted executors.** Agent proposals flow through the same policy engine as policy-generated actions. Every proposal is recorded in `agent_proposals` and linked to the shared `actions` ledger regardless of its verdict (approved, held, or rejected).
 
 ### Failure categories
 
@@ -87,6 +99,9 @@ Add variables in **Settings → CI/CD → Variables**:
 | `ATLASSIAN_BASE_URL` | e.g. `https://your-org.atlassian.net` | no | no |
 | `ATLASSIAN_PROJECT_KEY` | Jira project key e.g. `QA` | no | no |
 | `SLACK_WEBHOOK_URL` | Incoming webhook URL | yes | yes |
+| `ORACLE_FEEDBACK_PATH` | Path to feedback JSON file (enables feedback ingestion mode) | no | no |
+| `ORACLE_AGENT_PROPOSALS_PATH` | Path to agent proposals JSON file (enables agent proposal mode) | no | no |
+| `RETRY_COMMAND` | Shell command to execute when a `retry_test` proposal is approved | no | no |
 
 ---
 
@@ -136,6 +151,14 @@ The `verdict` output (`CLEAR` or `BLOCKED`) can be used by downstream jobs:
 
 Add the same secrets in **Settings → Secrets and variables → Actions**.
 
+Optional variables for feedback and agent proposal modes:
+
+| Variable | Description |
+|---|---|
+| `ORACLE_FEEDBACK_PATH` | Path to a feedback JSON file — enables feedback ingestion mode |
+| `ORACLE_AGENT_PROPOSALS_PATH` | Path to an agent proposals JSON file — enables agent proposal mode |
+| `RETRY_COMMAND` | Shell command run when an approved `retry_test` proposal executes |
+
 ---
 
 ### 3. Enable the JSON reporter in Playwright
@@ -180,7 +203,59 @@ npm run triage
 
 # Generate instinct files from SQLite history (run after every 5–10 CI runs)
 npm run learn
+
+# Ingest operator feedback from a JSON file
+ORACLE_FEEDBACK_PATH=./feedback.json npm run triage
+
+# Process agent proposals from a JSON file
+ORACLE_AGENT_PROPOSALS_PATH=./proposals.json npm run triage
 ```
+
+### Feedback ingestion
+
+Feedback is a JSON file (single object or array) with these fields:
+
+```json
+[
+  {
+    "feedback_type": "jira_closed_duplicate",
+    "pipeline_id": "12345",
+    "test_name": "Login > should redirect after auth",
+    "error_hash": "a3f9c1d2",
+    "notes": "Duplicate of PROJ-42"
+  }
+]
+```
+
+Valid `feedback_type` values: `jira_closed_duplicate`, `jira_closed_confirmed`, `classification_corrected`, `action_overridden`, `retry_passed`, `retry_failed`.
+
+### Agent proposal intake
+
+Agent proposals are a JSON file (single object or array) using snake_case keys:
+
+```json
+[
+  {
+    "source_agent": "flaky-detector-v1",
+    "proposal_type": "retry_test",
+    "pipeline_id": "12345",
+    "test_name": "Login > should redirect after auth",
+    "error_hash": "a3f9c1d2",
+    "confidence": 0.85,
+    "reasoning": "This error pattern matches known flaky selector timing",
+    "payload": {}
+  }
+]
+```
+
+Supported `proposal_type` values: `retry_test`, `request_human_review`.
+
+The policy engine applies confidence thresholds to `retry_test` proposals:
+- **≥ 0.8** → approved and executed (requires `RETRY_COMMAND` to be set)
+- **0.5–0.79** → held, written to `oracle-held-actions.json` for operator review
+- **< 0.5** → rejected
+
+All proposals are recorded in `agent_proposals` and linked to the `actions` ledger regardless of verdict.
 
 ---
 
@@ -203,22 +278,25 @@ injected into the prompt on future runs, improving accuracy for known patterns.
 
 ```
 src/
-  types.ts           — shared interfaces, enums, and action types
-  index.ts           — entry point and orchestration flow
-  report-parser.ts   — multi-format parser (Playwright, JUnit, pytest)
-  triage.ts          — AI classification via Claude API
-  prompt-builder.ts  — prompt assembly
-  policy-engine.ts   — action proposal, fingerprinting, and decision logic
-  state-store.ts     — SQLite persistence (runs, failures, actions audit trail)
-  instinct-loader.ts — loads .instincts/ into prompt context
-  jira-writer.ts     — Jira REST API integration (single-defect interface)
-  slack-notifier.ts  — Slack webhook integration
-  learn.ts           — instinct generation script
-oracle-stage.yml     — GitLab CI stage (include this in consuming repos)
+  types.ts                  — shared interfaces, enums, and action types
+  index.ts                  — entry point and orchestration flow (3 modes)
+  report-parser.ts          — multi-format parser (Playwright, JUnit, pytest)
+  triage.ts                 — AI classification via Claude API
+  prompt-builder.ts         — prompt assembly
+  policy-engine.ts          — action proposal, fingerprinting, and decision logic
+  state-store.ts            — SQLite persistence (runs, failures, actions audit trail)
+  feedback-processor.ts     — feedback ingestion from JSON files
+  agent-proposal-loader.ts  — agent proposal validation and loading
+  held-actions-writer.ts    — writes oracle-held-actions.json for operator review
+  instinct-loader.ts        — loads .instincts/ into prompt context
+  jira-writer.ts            — Jira REST API integration (single-defect interface)
+  slack-notifier.ts         — Slack webhook integration
+  learn.ts                  — instinct generation script
+oracle-stage.yml            — GitLab CI stage (include this in consuming repos)
 .github/workflows/
-  oracle-triage.yml  — reusable GitHub Actions workflow
+  oracle-triage.yml         — reusable GitHub Actions workflow
 tests/
-  fixtures/          — synthetic test reports for all supported formats
+  fixtures/                 — synthetic test reports for all supported formats
 ```
 
 ### SQLite schema
@@ -227,7 +305,9 @@ tests/
 |---|---|
 | `runs` | One row per pipeline run — timestamp, pipeline ID, failure counts |
 | `failures` | One row per triaged failure — category, confidence, error hash |
-| `actions` | Audit trail of every proposed and executed action — fingerprint, verdict, payload, confidence, decision reason, execution result |
+| `actions` | Unified audit ledger for every proposed and executed action — fingerprint, verdict, source (`policy`/`agent`), payload, confidence, decision reason, execution result |
+| `feedback` | Operator feedback entries — Jira outcomes, classification corrections, retry results |
+| `agent_proposals` | Intake record for every agent proposal — status lifecycle (`received` → `approved`/`held`/`rejected` → `executed`), linked to `actions` via fingerprint |
 | `instinct_feedback` | Correctness feedback for learned instinct patterns |
 
 ---
