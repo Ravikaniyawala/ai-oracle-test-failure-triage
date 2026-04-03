@@ -1,12 +1,20 @@
 import { parseReport } from './report-parser.js';
 import { triageFailures } from './triage.js';
-import { saveRun, saveFailures, saveAction, recordActionExecution, initDb } from './state-store.js';
+import {
+  initDb,
+  saveRun,
+  saveFailures,
+  saveAction,
+  recordActionExecution,
+  wasJiraCreatedFor,
+} from './state-store.js';
 import { createJiraDefect } from './jira-writer.js';
 import { postSlackSummary } from './slack-notifier.js';
 import { loadInstincts } from './instinct-loader.js';
 import { writeSummary } from './summary-writer.js';
 import { postPrComment } from './pr-commenter.js';
 import { proposeFailureActions, proposeRunActions, decide } from './policy-engine.js';
+import { ingestFeedback } from './feedback-processor.js';
 import { writeFileSync } from 'fs';
 import {
   TriageCategory,
@@ -15,13 +23,28 @@ import {
   type TriageResult,
 } from './types.js';
 
-const REPORT_PATH = process.env['PLAYWRIGHT_REPORT_PATH'] ?? './playwright-report.json';
-const PIPELINE_ID =
+const REPORT_PATH   = process.env['PLAYWRIGHT_REPORT_PATH'] ?? './playwright-report.json';
+const FEEDBACK_PATH = process.env['ORACLE_FEEDBACK_PATH'];
+const PIPELINE_ID   =
   process.env['CI_PIPELINE_ID'] ??
   process.env['GITHUB_RUN_ID'] ??
   `local-${Date.now()}`;
 
 async function main(): Promise<void> {
+  // DB must be ready for both modes.
+  initDb();
+
+  // ── Feedback ingestion mode ──────────────────────────────────────────────
+  // Set ORACLE_FEEDBACK_PATH to a JSON file to ingest feedback and exit.
+  // No API key required; safe to run as a post-pipeline step.
+  if (FEEDBACK_PATH) {
+    console.log('[oracle] feedback ingestion mode:', FEEDBACK_PATH);
+    const count = ingestFeedback(FEEDBACK_PATH);
+    console.log(`[oracle] ingested ${count} feedback entry/entries`);
+    process.exit(0);
+  }
+
+  // ── Normal triage mode ───────────────────────────────────────────────────
   if (!process.env['ANTHROPIC_API_KEY']) {
     console.error('[oracle] ANTHROPIC_API_KEY is not set — cannot triage');
     process.exit(1);
@@ -29,8 +52,6 @@ async function main(): Promise<void> {
 
   try {
     console.log('[oracle] starting triage run', { PIPELINE_ID, REPORT_PATH });
-
-    initDb();
 
     const parsed = parseReport(REPORT_PATH);
     console.log(`[oracle] detected format: ${parsed.detectedFormat}`);
@@ -47,7 +68,7 @@ async function main(): Promise<void> {
 
     // 1. Classify failures via LLM
     const instincts = loadInstincts('./.instincts');
-    const results = await triageFailures(parsed.failures, instincts, parsed.detectedFormat);
+    const results   = await triageFailures(parsed.failures, instincts, parsed.detectedFormat);
 
     // 2. Persist run + failures; collect ordered failure IDs
     const runId      = saveRun(PIPELINE_ID, parsed.totalFailures, results);
@@ -61,15 +82,24 @@ async function main(): Promise<void> {
       const failureId = failureIds[i] as number;
 
       for (const proposal of proposeFailureActions(result, failureId, runId, PIPELINE_ID)) {
-        const decision  = decide(proposal, result.confidence);
-        const inserted  = saveAction(runId, proposal, decision);
+        // History-aware decision: suppress if Jira already created for this signature.
+        const jiraAlreadyCreated = proposal.type === 'create_jira'
+          ? wasJiraCreatedFor(proposal.fingerprint)
+          : false;
+
+        const decision = decide(proposal, result.confidence, { jiraAlreadyCreated });
+        const inserted = saveAction(runId, proposal, decision);
 
         if (!inserted) {
+          // Fingerprint already in DB from this exact run — skip silently.
           console.log(`[oracle] skipping duplicate action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
           continue;
         }
 
-        if (decision.verdict !== 'approved') continue;
+        if (decision.verdict !== 'approved') {
+          console.log(`[oracle] action ${proposal.type} ${decision.verdict} — ${decision.reason}`);
+          continue;
+        }
 
         if (proposal.type === 'create_jira') {
           const key = await createJiraDefect(result);
@@ -82,8 +112,6 @@ async function main(): Promise<void> {
             jiraCreated.push({ testName: result.testName, category: result.category, key });
           }
         }
-
-        // quarantine_test: no adapter yet — persist only
       }
     }
 
@@ -97,7 +125,10 @@ async function main(): Promise<void> {
         continue;
       }
 
-      if (decision.verdict !== 'approved') continue;
+      if (decision.verdict !== 'approved') {
+        console.log(`[oracle] action ${proposal.type} ${decision.verdict} — ${decision.reason}`);
+        continue;
+      }
 
       if (proposal.type === 'notify_slack') {
         await postSlackSummary(results, jiraCreated, PIPELINE_ID);

@@ -75,6 +75,7 @@ export interface Decision {
   proposal:   ActionProposal;
   verdict:    DecisionVerdict;
   confidence: number;
+  reason:     string;
 }
 
 export interface ActionExecution {
@@ -87,4 +88,26 @@ export interface JiraCreated {
   testName: string;
   category: TriageCategory;
   key:      string;
+}
+
+// ── Feedback types ────────────────────────────────────────────────────────────
+
+export type FeedbackType =
+  | 'jira_closed_duplicate'
+  | 'jira_closed_confirmed'
+  | 'classification_corrected'
+  | 'action_overridden'
+  | 'retry_passed'
+  | 'retry_failed';
+
+export interface FeedbackEntry {
+  feedbackType:       FeedbackType;
+  pipelineId?:        string;
+  testName?:          string;
+  errorHash?:         string;
+  actionFingerprint?: string;
+  oldValue?:          string;
+  newValue?:          string;
+  notes?:             string;
+  createdAt:          string;
 }

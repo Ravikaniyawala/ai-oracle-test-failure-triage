@@ -1,5 +1,11 @@
 import Database from 'better-sqlite3';
-import { type ActionExecution, type ActionProposal, type Decision, type TriageResult } from './types.js';
+import {
+  type ActionExecution,
+  type ActionProposal,
+  type Decision,
+  type FeedbackEntry,
+  type TriageResult,
+} from './types.js';
 
 const DB_PATH = process.env['ORACLE_STATE_DB_PATH'] ?? './oracle-state.db';
 let db: Database.Database;
@@ -50,18 +56,28 @@ export function initDb(): void {
       FOREIGN KEY (run_id)     REFERENCES runs(id),
       FOREIGN KEY (failure_id) REFERENCES failures(id)
     );
+    CREATE TABLE IF NOT EXISTS feedback (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      feedback_type      TEXT    NOT NULL,
+      pipeline_id        TEXT,
+      test_name          TEXT,
+      error_hash         TEXT,
+      action_fingerprint TEXT,
+      old_value          TEXT,
+      new_value          TEXT,
+      notes              TEXT,
+      created_at         TEXT    NOT NULL
+    );
   `);
 
-  // Additive migrations for DBs created before the audit columns were added.
-  // ALTER TABLE ADD COLUMN is a no-op-safe operation in SQLite when the column
-  // doesn't exist; we catch the error for the case where it already does.
-  const addCol = (col: string, def: string): void => {
-    try { db.exec(`ALTER TABLE actions ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
+  // Additive migrations for DBs created before audit / feedback columns were added.
+  const addCol = (table: string, col: string, def: string): void => {
+    try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
   };
-  addCol('payload_json',    'TEXT');
-  addCol('risk_score',      'REAL');
-  addCol('decision_reason', 'TEXT');
-  addCol('confidence',      'REAL');
+  addCol('actions', 'payload_json',    'TEXT');
+  addCol('actions', 'risk_score',      'REAL');
+  addCol('actions', 'decision_reason', 'TEXT');
+  addCol('actions', 'confidence',      'REAL');
 }
 
 export function saveRun(
@@ -134,8 +150,8 @@ export function saveAction(
     proposal.source,
     decision.verdict,
     JSON.stringify(proposal),
-    null,                       // risk_score: not computed in Step 1
-    'policy:auto-approved',     // decision_reason: Step 1 always auto-approves
+    null,                 // risk_score: not computed in Step 1
+    decision.reason,
     decision.confidence,
   );
   return info.changes === 1;
@@ -163,6 +179,44 @@ export function isActionDuplicate(fingerprint: string): boolean {
     `SELECT 1 FROM actions WHERE action_fingerprint = ? LIMIT 1`
   ).get(fingerprint);
   return row !== undefined;
+}
+
+/**
+ * Returns true if a create_jira action with this fingerprint previously
+ * succeeded (execution_ok = 1).  Used by the policy engine to suppress
+ * duplicate Jira tickets across pipeline re-runs.
+ */
+export function wasJiraCreatedFor(fingerprint: string): boolean {
+  const row = db.prepare(
+    `SELECT 1 FROM actions
+     WHERE action_fingerprint = ?
+       AND action_type = 'create_jira'
+       AND execution_ok = 1
+     LIMIT 1`
+  ).get(fingerprint);
+  return row !== undefined;
+}
+
+/**
+ * Persist a single feedback entry.
+ */
+export function saveFeedback(entry: FeedbackEntry): void {
+  db.prepare(
+    `INSERT INTO feedback
+       (feedback_type, pipeline_id, test_name, error_hash, action_fingerprint,
+        old_value, new_value, notes, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    entry.feedbackType,
+    entry.pipelineId        ?? null,
+    entry.testName          ?? null,
+    entry.errorHash         ?? null,
+    entry.actionFingerprint ?? null,
+    entry.oldValue          ?? null,
+    entry.newValue          ?? null,
+    entry.notes             ?? null,
+    entry.createdAt,
+  );
 }
 
 export function getRecentFailurePattern(
