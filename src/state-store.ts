@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import {
   type ActionExecution,
   type ActionProposal,
+  type AgentProposal,
+  type AgentProposalStatus,
   type Decision,
   type FeedbackEntry,
   type TriageResult,
@@ -68,9 +70,24 @@ export function initDb(): void {
       notes              TEXT,
       created_at         TEXT    NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS agent_proposals (
+      id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_agent              TEXT    NOT NULL,
+      pipeline_id               TEXT    NOT NULL,
+      test_name                 TEXT    NOT NULL,
+      error_hash                TEXT    NOT NULL,
+      proposal_type             TEXT    NOT NULL,
+      payload_json              TEXT,
+      confidence                REAL    NOT NULL,
+      reasoning                 TEXT,
+      status                    TEXT    NOT NULL DEFAULT 'received',
+      decision_reason           TEXT,
+      linked_action_fingerprint TEXT,
+      created_at                TEXT    NOT NULL
+    );
   `);
 
-  // Additive migrations for DBs created before audit / feedback columns were added.
+  // Additive migrations for DBs created before these columns were added.
   const addCol = (table: string, col: string, def: string): void => {
     try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
   };
@@ -127,8 +144,7 @@ export function saveFailures(runId: number, results: TriageResult[]): number[] {
  *
  * Returns true if the row was newly inserted, false if it already existed
  * (duplicate fingerprint).  Callers MUST check this return value before
- * executing the action — a false return means the action was already handled
- * in a previous run and must not be re-executed.
+ * executing the action.
  */
 export function saveAction(
   runId: number,
@@ -150,7 +166,7 @@ export function saveAction(
     proposal.source,
     decision.verdict,
     JSON.stringify(proposal),
-    null,                 // risk_score: not computed in Step 1
+    null,
     decision.reason,
     decision.confidence,
   );
@@ -217,6 +233,47 @@ export function saveFeedback(entry: FeedbackEntry): void {
     entry.notes             ?? null,
     entry.createdAt,
   );
+}
+
+/**
+ * Persist a received agent proposal and return its DB row id.
+ * Initial status is always 'received'.
+ */
+export function saveAgentProposal(proposal: AgentProposal): number {
+  const info = db.prepare(
+    `INSERT INTO agent_proposals
+       (source_agent, pipeline_id, test_name, error_hash, proposal_type,
+        payload_json, confidence, reasoning, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'received', ?)`
+  ).run(
+    proposal.sourceAgent,
+    proposal.pipelineId,
+    proposal.testName,
+    proposal.errorHash,
+    proposal.proposalType,
+    JSON.stringify(proposal.payload),
+    proposal.confidence,
+    proposal.reasoning,
+    new Date().toISOString(),
+  );
+  return info.lastInsertRowid as number;
+}
+
+/**
+ * Update the status, decision reason, and linked fingerprint of an agent proposal.
+ * Called after decisioning and again after execution.
+ */
+export function updateAgentProposalStatus(
+  id: number,
+  status: AgentProposalStatus,
+  decisionReason: string,
+  fingerprint: string,
+): void {
+  db.prepare(
+    `UPDATE agent_proposals
+     SET status = ?, decision_reason = ?, linked_action_fingerprint = ?
+     WHERE id = ?`
+  ).run(status, decisionReason, fingerprint, id);
 }
 
 export function getRecentFailurePattern(

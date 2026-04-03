@@ -1,3 +1,5 @@
+import { execSync } from 'child_process';
+import { writeFileSync } from 'fs';
 import { parseReport } from './report-parser.js';
 import { triageFailures } from './triage.js';
 import {
@@ -7,34 +9,47 @@ import {
   saveAction,
   recordActionExecution,
   wasJiraCreatedFor,
+  saveFeedback,
+  saveAgentProposal,
+  updateAgentProposalStatus,
 } from './state-store.js';
 import { createJiraDefect } from './jira-writer.js';
 import { postSlackSummary } from './slack-notifier.js';
 import { loadInstincts } from './instinct-loader.js';
 import { writeSummary } from './summary-writer.js';
 import { postPrComment } from './pr-commenter.js';
-import { proposeFailureActions, proposeRunActions, decide } from './policy-engine.js';
+import { proposeFailureActions, proposeRunActions, decide, decideAgentProposal } from './policy-engine.js';
 import { ingestFeedback } from './feedback-processor.js';
-import { writeFileSync } from 'fs';
+import { loadAgentProposals } from './agent-proposal-loader.js';
+import { writeHeldActions } from './held-actions-writer.js';
 import {
   TriageCategory,
+  type ActionProposal,
+  type AgentDecision,
+  type AgentProposal,
+  type Decision,
   type JiraCreated,
   type RunSummary,
   type TriageResult,
 } from './types.js';
 
-const REPORT_PATH   = process.env['PLAYWRIGHT_REPORT_PATH'] ?? './playwright-report.json';
-const FEEDBACK_PATH = process.env['ORACLE_FEEDBACK_PATH'];
-const PIPELINE_ID   =
+const REPORT_PATH          = process.env['PLAYWRIGHT_REPORT_PATH']    ?? './playwright-report.json';
+const FEEDBACK_PATH        = process.env['ORACLE_FEEDBACK_PATH'];
+const AGENT_PROPOSALS_PATH = process.env['ORACLE_AGENT_PROPOSALS_PATH'];
+const PIPELINE_ID          =
   process.env['CI_PIPELINE_ID'] ??
   process.env['GITHUB_RUN_ID'] ??
   `local-${Date.now()}`;
 
+// Sentinel run_id used for agent-proposal-mode actions (no CI run exists).
+// SQLite FK constraints are not enforced without PRAGMA foreign_keys = ON.
+const AGENT_MODE_RUN_ID = 0;
+
 async function main(): Promise<void> {
-  // DB must be ready for both modes.
+  // DB must be ready for all modes.
   initDb();
 
-  // ── Feedback ingestion mode ──────────────────────────────────────────────
+  // ── Mode 1: Feedback ingestion ───────────────────────────────────────────
   // Set ORACLE_FEEDBACK_PATH to a JSON file to ingest feedback and exit.
   // No API key required; safe to run as a post-pipeline step.
   if (FEEDBACK_PATH) {
@@ -44,7 +59,106 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // ── Normal triage mode ───────────────────────────────────────────────────
+  // ── Mode 2: Agent proposal ingestion ────────────────────────────────────
+  // Set ORACLE_AGENT_PROPOSALS_PATH to a JSON file to process agent proposals
+  // and exit. No API key required.
+  if (AGENT_PROPOSALS_PATH) {
+    console.log('[oracle] agent proposal mode:', AGENT_PROPOSALS_PATH);
+    const proposals = loadAgentProposals(AGENT_PROPOSALS_PATH);
+    console.log(`[oracle] ${proposals.length} valid proposal(s) loaded`);
+
+    const heldDecisions: AgentDecision[] = [];
+
+    for (const proposal of proposals) {
+      // 1. Save intake record in agent_proposals (status: received).
+      const agentProposalId = saveAgentProposal(proposal);
+
+      // 2. Run through the decision layer — agents are never trusted executors.
+      const agentDecision  = decideAgentProposal(proposal);
+
+      // 3. Map to internal ActionProposal + Decision for the shared actions ledger.
+      const actionProposal = toActionProposal(proposal, agentDecision.fingerprint);
+      const decision       = toDecision(actionProposal, agentDecision);
+
+      // 4. Persist to the shared actions table (INSERT OR IGNORE for idempotency).
+      //    This is the unified execution ledger for both policy and agent work.
+      saveAction(AGENT_MODE_RUN_ID, actionProposal, decision);
+
+      // 5. Update agent_proposals status + link to action fingerprint.
+      updateAgentProposalStatus(
+        agentProposalId, agentDecision.verdict, agentDecision.reason, agentDecision.fingerprint,
+      );
+
+      if (agentDecision.verdict === 'rejected') {
+        console.log(`[oracle] agent proposal rejected: ${proposal.proposalType} — ${agentDecision.reason}`);
+        continue;
+      }
+
+      if (agentDecision.verdict === 'held') {
+        heldDecisions.push(agentDecision);
+        console.log(`[oracle] agent proposal held: ${proposal.proposalType} — ${agentDecision.reason}`);
+        continue;
+      }
+
+      // 6. Approved — execute if the proposal type has an executor.
+
+      if (proposal.proposalType === 'retry_test') {
+        const outcome = executeRetry(proposal.testName);
+
+        // Record execution result in the shared actions ledger.
+        recordActionExecution(agentDecision.fingerprint, {
+          ok:        outcome === 'passed',
+          detail:    outcome === 'skipped'
+            ? 'skipped:no_retry_command'
+            : outcome === 'passed' ? 'retry command succeeded' : 'retry command failed',
+          timestamp: new Date().toISOString(),
+        });
+
+        updateAgentProposalStatus(
+          agentProposalId, 'executed', agentDecision.reason, agentDecision.fingerprint,
+        );
+
+        // Only persist feedback for real retry outcomes — not skips.
+        // 'skipped' means RETRY_COMMAND was never set; there is no meaningful outcome.
+        if (outcome !== 'skipped') {
+          saveFeedback({
+            feedbackType: outcome === 'passed' ? 'retry_passed' : 'retry_failed',
+            pipelineId:   proposal.pipelineId,
+            testName:     proposal.testName,
+            errorHash:    proposal.errorHash,
+            notes:        outcome === 'passed' ? 'retry command succeeded' : 'retry command failed',
+            createdAt:    new Date().toISOString(),
+          });
+        }
+        continue;
+      }
+
+      if (proposal.proposalType === 'request_human_review') {
+        // Low-risk acknowledgement only — no external side effect.
+        recordActionExecution(agentDecision.fingerprint, {
+          ok:        true,
+          detail:    'request_human_review acknowledged',
+          timestamp: new Date().toISOString(),
+        });
+        updateAgentProposalStatus(
+          agentProposalId, 'executed', agentDecision.reason, agentDecision.fingerprint,
+        );
+        console.log(`[oracle] request_human_review recorded for "${proposal.testName}"`);
+        continue;
+      }
+
+      // Should never reach here — decideAgentProposal rejects unknown types.
+      console.warn(`[oracle] approved proposal type "${proposal.proposalType}" has no executor — skipping`);
+    }
+
+    if (heldDecisions.length > 0) {
+      writeHeldActions(heldDecisions);
+    }
+
+    process.exit(0);
+  }
+
+  // ── Mode 3: Normal CI triage ─────────────────────────────────────────────
   if (!process.env['ANTHROPIC_API_KEY']) {
     console.error('[oracle] ANTHROPIC_API_KEY is not set — cannot triage');
     process.exit(1);
@@ -82,7 +196,6 @@ async function main(): Promise<void> {
       const failureId = failureIds[i] as number;
 
       for (const proposal of proposeFailureActions(result, failureId, runId, PIPELINE_ID)) {
-        // History-aware decision: suppress if Jira already created for this signature.
         const jiraAlreadyCreated = proposal.type === 'create_jira'
           ? wasJiraCreatedFor(proposal.fingerprint)
           : false;
@@ -91,7 +204,6 @@ async function main(): Promise<void> {
         const inserted = saveAction(runId, proposal, decision);
 
         if (!inserted) {
-          // Fingerprint already in DB from this exact run — skip silently.
           console.log(`[oracle] skipping duplicate action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
           continue;
         }
@@ -159,6 +271,78 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 }
+
+// ── Agent proposal helpers ────────────────────────────────────────────────────
+
+/**
+ * Map an agent proposal + its fingerprint into the internal ActionProposal
+ * shape so it can flow through saveAction() into the shared actions ledger.
+ *
+ * runId is 0 (AGENT_MODE_RUN_ID) — agent proposals have no CI run.
+ * SQLite FK constraints are not enforced without PRAGMA foreign_keys = ON,
+ * so 0 is a safe sentinel value here.
+ */
+function toActionProposal(proposal: AgentProposal, fingerprint: string): ActionProposal {
+  return {
+    type:        proposal.proposalType as ActionProposal['type'],
+    scope:       'failure',
+    scopeId:     `${proposal.testName}:${proposal.errorHash}`,
+    failureId:   null,
+    clusterKey:  null,
+    runId:       AGENT_MODE_RUN_ID,
+    pipelineId:  proposal.pipelineId,
+    source:      'agent',
+    fingerprint,
+  };
+}
+
+/**
+ * Map an AgentDecision into the internal Decision shape so it can be passed
+ * to saveAction().  AgentVerdict ('approved' | 'held' | 'rejected') is a
+ * subset of DecisionVerdict (which now includes 'held').
+ */
+function toDecision(actionProposal: ActionProposal, agentDecision: AgentDecision): Decision {
+  return {
+    proposal:   actionProposal,
+    verdict:    agentDecision.verdict,
+    confidence: agentDecision.proposal.confidence,
+    reason:     agentDecision.reason,
+  };
+}
+
+// ── Retry execution ───────────────────────────────────────────────────────────
+
+type RetryOutcome = 'passed' | 'failed' | 'skipped';
+
+/**
+ * Execute the retry command specified in RETRY_COMMAND env var.
+ *
+ * Returns:
+ *   'passed'  — command ran and exited 0
+ *   'failed'  — command ran and exited non-zero
+ *   'skipped' — RETRY_COMMAND not set; command was never executed
+ *
+ * Never throws.  Callers must treat 'skipped' as a no-op for feedback purposes.
+ */
+function executeRetry(testName: string): RetryOutcome {
+  const cmd = process.env['RETRY_COMMAND'];
+  if (!cmd) {
+    console.log(`[oracle] RETRY_COMMAND not set — skipping retry execution for "${testName}"`);
+    return 'skipped';
+  }
+
+  try {
+    console.log(`[oracle] executing retry for "${testName}": ${cmd}`);
+    execSync(cmd, { stdio: 'inherit' });
+    console.log(`[oracle] retry succeeded for "${testName}"`);
+    return 'passed';
+  } catch {
+    console.log(`[oracle] retry failed for "${testName}"`);
+    return 'failed';
+  }
+}
+
+// ── Summary helper ────────────────────────────────────────────────────────────
 
 function summarise(results: TriageResult[]): RunSummary {
   const counts: RunSummary = {

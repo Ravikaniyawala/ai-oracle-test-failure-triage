@@ -55,9 +55,15 @@ export interface TriageApiResponse {
 
 // ── Policy / orchestration types ─────────────────────────────────────────────
 
-export type ActionType      = 'create_jira' | 'notify_slack' | 'quarantine_test';
+export type ActionType =
+  | 'create_jira'
+  | 'notify_slack'
+  | 'quarantine_test'
+  | 'retry_test'
+  | 'request_human_review';
+
 export type ActionScope     = 'failure' | 'cluster' | 'run';
-export type DecisionVerdict = 'approved' | 'rejected' | 'deferred';
+export type DecisionVerdict = 'approved' | 'rejected' | 'deferred' | 'held';
 
 export interface ActionProposal {
   type:        ActionType;
@@ -67,7 +73,7 @@ export interface ActionProposal {
   clusterKey:  string | null;
   runId:       number;
   pipelineId:  string;
-  source:      'policy';
+  source:      'policy' | 'agent';
   fingerprint: string;
 }
 
@@ -110,4 +116,33 @@ export interface FeedbackEntry {
   newValue?:          string;
   notes?:             string;
   createdAt:          string;
+}
+
+// ── Agent proposal types ──────────────────────────────────────────────────────
+
+// Lifecycle status of a row in agent_proposals table.
+export type AgentProposalStatus = 'received' | 'approved' | 'held' | 'rejected' | 'executed';
+
+// Verdict returned by decideAgentProposal().
+// Uses 'held' (not 'deferred') because these require explicit operator action.
+export type AgentVerdict = 'approved' | 'held' | 'rejected';
+
+// Validated internal form of an incoming agent proposal.
+export interface AgentProposal {
+  sourceAgent:  string;
+  proposalType: string; // validated/handled in decideAgentProposal
+  pipelineId:   string;
+  testName:     string;
+  errorHash:    string;
+  confidence:   number;
+  reasoning:    string;
+  payload:      Record<string, unknown>;
+}
+
+// Result of running an agent proposal through the decision layer.
+export interface AgentDecision {
+  proposal:    AgentProposal;
+  verdict:     AgentVerdict;
+  reason:      string;
+  fingerprint: string;
 }
