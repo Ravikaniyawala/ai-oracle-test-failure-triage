@@ -103,11 +103,13 @@ export interface JiraCreated {
  * Read-only — never used to influence decisions in this slice.
  */
 export interface PatternStats {
-  /** Total actions recorded for this testName:errorHash pair. */
-  seenCount:          number;
+  /** Total action rows recorded for this testName:errorHash pair.
+   *  Counts every action (create_jira, retry_test, etc.) not unique pipeline runs. */
+  actionCount:        number;
   /** create_jira actions that executed successfully (execution_ok = 1). */
   jiraCreatedCount:   number;
-  /** feedback rows where feedback_type = jira_closed_duplicate. */
+  /** Distinct feedback rows marked jira_closed_duplicate for this pattern,
+   *  matched by test_name+error_hash OR by action_fingerprint of related actions. */
   jiraDuplicateCount: number;
   /** feedback rows where feedback_type = retry_passed. */
   retryPassedCount:   number;

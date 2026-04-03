@@ -376,7 +376,7 @@ function executeRetry(testName: string): RetryOutcome {
  */
 function logPatternStats(testName: string, errorHash: string, stats: PatternStats): void {
   console.log(`[history] ${testName} (${errorHash})`);
-  console.log(`  seen=${stats.seenCount}  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
+  console.log(`  actions=${stats.actionCount}  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
 }
 
 // ── Summary helper ────────────────────────────────────────────────────────────

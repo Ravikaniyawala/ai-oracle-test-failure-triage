@@ -280,9 +280,11 @@ export function updateAgentProposalStatus(
 /**
  * Compute historical pattern stats for a failure identified by testName + errorHash.
  *
- * seenCount        — rows in actions whose scopeId matches testName:errorHash
- * jiraCreatedCount — create_jira actions that executed successfully
- * jiraDuplicateCount — feedback rows marked jira_closed_duplicate for this pattern
+ * actionCount        — total action rows recorded for this testName:errorHash pair
+ * jiraCreatedCount   — create_jira actions that executed successfully
+ * jiraDuplicateCount — distinct feedback rows marked jira_closed_duplicate,
+ *                      matched by test_name+error_hash OR by action_fingerprint
+ *                      of any action associated with this pattern
  * retryPassedCount   — feedback rows marked retry_passed for this pattern
  * retryFailedCount   — feedback rows marked retry_failed for this pattern
  *
@@ -291,7 +293,7 @@ export function updateAgentProposalStatus(
 export function getPatternStats(testName: string, errorHash: string): PatternStats {
   const scopeId = `${testName}:${errorHash}`;
 
-  const seenCount = (db.prepare(
+  const actionCount = (db.prepare(
     `SELECT COUNT(*) as count FROM actions
      WHERE json_extract(payload_json, '$.scopeId') = ?`,
   ).get(scopeId) as { count: number }).count;
@@ -303,11 +305,20 @@ export function getPatternStats(testName: string, errorHash: string): PatternSta
        AND json_extract(payload_json, '$.scopeId') = ?`,
   ).get(scopeId) as { count: number }).count;
 
+  // COUNT(DISTINCT id) prevents double-counting if a feedback row matches both
+  // the test_name+error_hash condition and the action_fingerprint subquery.
   const jiraDuplicateCount = (db.prepare(
-    `SELECT COUNT(*) as count FROM feedback
-     WHERE feedback_type = 'jira_closed_duplicate'
-       AND test_name = ? AND error_hash = ?`,
-  ).get(testName, errorHash) as { count: number }).count;
+    `SELECT COUNT(DISTINCT f.id) as count
+     FROM feedback f
+     WHERE f.feedback_type = 'jira_closed_duplicate'
+       AND (
+         (f.test_name = ? AND f.error_hash = ?)
+         OR f.action_fingerprint IN (
+           SELECT action_fingerprint FROM actions
+           WHERE json_extract(payload_json, '$.scopeId') = ?
+         )
+       )`,
+  ).get(testName, errorHash, scopeId) as { count: number }).count;
 
   const retryPassedCount = (db.prepare(
     `SELECT COUNT(*) as count FROM feedback
@@ -321,7 +332,7 @@ export function getPatternStats(testName: string, errorHash: string): PatternSta
        AND test_name = ? AND error_hash = ?`,
   ).get(testName, errorHash) as { count: number }).count;
 
-  return { seenCount, jiraCreatedCount, jiraDuplicateCount, retryPassedCount, retryFailedCount };
+  return { actionCount, jiraCreatedCount, jiraDuplicateCount, retryPassedCount, retryFailedCount };
 }
 
 export function getRecentFailurePattern(
