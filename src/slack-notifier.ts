@@ -1,9 +1,10 @@
-import { type TriageResult, type RunSummary, TriageCategory } from './types.js';
+import { type JiraCreated, type TriageResult, type RunSummary, TriageCategory } from './types.js';
 
 const WEBHOOK_URL = process.env['SLACK_WEBHOOK_URL'];
 
 export async function postSlackSummary(
   results: TriageResult[],
+  jiraCreated: JiraCreated[],
   pipelineId: string,
 ): Promise<void> {
   if (process.env['DRY_RUN'] === 'true') {
@@ -23,8 +24,6 @@ export async function postSlackSummary(
     [TriageCategory.NEW_BUG]:    0,
   };
   for (const r of results) counts[r.category]++;
-
-  const jiraCreated = results.filter(r => r.createJira);
 
   const lines = [
     `*AI Oracle — Pipeline ${pipelineId}*`,

@@ -1,38 +1,31 @@
 import { TriageCategory, type TriageResult } from './types.js';
 
-const BASE_URL   = process.env['ATLASSIAN_BASE_URL'];
-const TOKEN      = process.env['ATLASSIAN_TOKEN'];
+const BASE_URL    = process.env['ATLASSIAN_BASE_URL'];
+const TOKEN       = process.env['ATLASSIAN_TOKEN'];
 const PROJECT_KEY = process.env['ATLASSIAN_PROJECT_KEY'] ?? 'QA';
-const EMAIL      = process.env['ATLASSIAN_EMAIL'] ?? 'oracle@your-org.com';
+const EMAIL       = process.env['ATLASSIAN_EMAIL'] ?? 'oracle@your-org.com';
 
-export async function writeJiraDefects(results: TriageResult[]): Promise<void> {
+/**
+ * Create a single Jira defect for the given triaged failure.
+ * Returns the Jira issue key (e.g. "QA-123") on success, or null on failure /
+ * dry-run / missing credentials.
+ */
+export async function createJiraDefect(result: TriageResult): Promise<string | null> {
   if (process.env['DRY_RUN'] === 'true') {
-    console.log('[oracle] DRY_RUN — skipping Jira');
-    return;
+    console.log('[oracle] DRY_RUN — skipping Jira for', result.testName);
+    return null;
   }
   if (!BASE_URL || !TOKEN) {
     console.warn('[oracle] ATLASSIAN_BASE_URL or ATLASSIAN_TOKEN not set, skipping Jira');
-    return;
+    return null;
   }
 
-  const toCreate = results.filter(r => r.createJira);
-  if (toCreate.length === 0) {
-    console.log('[oracle] no Jira defects to create');
-    return;
-  }
-
-  for (const failure of toCreate) {
-    await createDefect(failure);
-  }
-}
-
-async function createDefect(failure: TriageResult): Promise<void> {
-  const priority = failure.category === TriageCategory.REGRESSION ? 'High' : 'Medium';
+  const priority = result.category === TriageCategory.REGRESSION ? 'High' : 'Medium';
 
   const body = {
     fields: {
       project:     { key: PROJECT_KEY },
-      summary:     `[AI Oracle] ${failure.category}: ${failure.testName.slice(0, 100)}`,
+      summary:     `[AI Oracle] ${result.category}: ${result.testName.slice(0, 100)}`,
       description: {
         type:    'doc',
         version: 1,
@@ -41,10 +34,10 @@ async function createDefect(failure: TriageResult): Promise<void> {
           content: [{
             type: 'text',
             text: [
-              `Category: ${failure.category} (confidence: ${(failure.confidence * 100).toFixed(0)}%)`,
-              `Reasoning: ${failure.reasoning}`,
-              `Suggested fix: ${failure.suggestedFix}`,
-              `Error: ${failure.errorMessage.slice(0, 500)}`,
+              `Category: ${result.category} (confidence: ${(result.confidence * 100).toFixed(0)}%)`,
+              `Reasoning: ${result.reasoning}`,
+              `Suggested fix: ${result.suggestedFix}`,
+              `Error: ${result.errorMessage.slice(0, 500)}`,
             ].join('\n\n'),
           }],
         }],
@@ -66,13 +59,15 @@ async function createDefect(failure: TriageResult): Promise<void> {
     });
 
     if (!res.ok) {
-      console.error(`[oracle] Jira create failed for "${failure.testName}":`, await res.text());
-      return;
+      console.error(`[oracle] Jira create failed for "${result.testName}":`, await res.text());
+      return null;
     }
 
     const data = await res.json() as { key: string };
-    console.log(`[oracle] Jira created: ${data.key} for "${failure.testName}"`);
+    console.log(`[oracle] Jira created: ${data.key} for "${result.testName}"`);
+    return data.key;
   } catch (err) {
     console.error('[oracle] Jira write error:', (err as Error).message);
+    return null;
   }
 }

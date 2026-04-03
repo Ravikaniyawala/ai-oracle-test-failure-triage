@@ -48,7 +48,6 @@ async function triageBatch(
       confidence:   r.confidence,
       reasoning:    r.reasoning,
       suggestedFix: r.suggested_fix,
-      createJira:   r.create_jira,
     }));
   } catch (err) {
     console.error('[oracle] triage batch failed:', (err as Error).message);

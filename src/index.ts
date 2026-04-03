@@ -1,13 +1,19 @@
 import { parseReport } from './report-parser.js';
 import { triageFailures } from './triage.js';
-import { saveRun, saveFailures, initDb } from './state-store.js';
-import { writeJiraDefects } from './jira-writer.js';
+import { saveRun, saveFailures, saveAction, recordActionExecution, initDb } from './state-store.js';
+import { createJiraDefect } from './jira-writer.js';
 import { postSlackSummary } from './slack-notifier.js';
 import { loadInstincts } from './instinct-loader.js';
 import { writeSummary } from './summary-writer.js';
 import { postPrComment } from './pr-commenter.js';
+import { proposeFailureActions, proposeRunActions, decide } from './policy-engine.js';
 import { writeFileSync } from 'fs';
-import { TriageCategory, type RunSummary, type TriageResult } from './types.js';
+import {
+  TriageCategory,
+  type JiraCreated,
+  type RunSummary,
+  type TriageResult,
+} from './types.js';
 
 const REPORT_PATH = process.env['PLAYWRIGHT_REPORT_PATH'] ?? './playwright-report.json';
 const PIPELINE_ID =
@@ -39,17 +45,65 @@ async function main(): Promise<void> {
 
     console.log(`[oracle] ${parsed.failures.length} failure(s) from ${parsed.totalTests} total test(s)`);
 
+    // 1. Classify failures via LLM
     const instincts = loadInstincts('./.instincts');
     const results = await triageFailures(parsed.failures, instincts, parsed.detectedFormat);
 
-    const runId = saveRun(PIPELINE_ID, parsed.totalFailures, results);
-    saveFailures(runId, results);
+    // 2. Persist run + failures; collect ordered failure IDs
+    const runId      = saveRun(PIPELINE_ID, parsed.totalFailures, results);
+    const failureIds = saveFailures(runId, results);
 
-    await writeJiraDefects(results);
-    await postSlackSummary(results, PIPELINE_ID);
+    // 3. Propose + decide per-failure actions
+    const jiraCreated: JiraCreated[] = [];
+
+    for (let i = 0; i < results.length; i++) {
+      const result    = results[i] as TriageResult;
+      const failureId = failureIds[i] as number;
+
+      for (const proposal of proposeFailureActions(result, failureId, runId, PIPELINE_ID)) {
+        const decision = decide(proposal, result.confidence);
+        saveAction(runId, proposal, decision);
+
+        if (decision.verdict !== 'approved') continue;
+
+        if (proposal.type === 'create_jira') {
+          const key = await createJiraDefect(result);
+          recordActionExecution(proposal.fingerprint, {
+            ok:        key !== null,
+            detail:    key ?? 'create_jira failed or skipped',
+            timestamp: new Date().toISOString(),
+          });
+          if (key !== null) {
+            jiraCreated.push({ testName: result.testName, category: result.category, key });
+          }
+        }
+
+        // quarantine_test: no adapter yet — persist only
+      }
+    }
+
+    // 4. Propose + decide run-level actions
+    for (const proposal of proposeRunActions(runId, PIPELINE_ID)) {
+      const decision = decide(proposal, 1.0);
+      saveAction(runId, proposal, decision);
+
+      if (decision.verdict !== 'approved') continue;
+
+      if (proposal.type === 'notify_slack') {
+        await postSlackSummary(results, jiraCreated, PIPELINE_ID);
+        recordActionExecution(proposal.fingerprint, {
+          ok:        true,
+          detail:    'slack posted',
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
+    // 5. PR comment + summary markdown
     const markdown = writeSummary(results, parsed.totalTests, PIPELINE_ID);
     await postPrComment(markdown);
 
+    // 6. Verdict file
     const summary = summarise(results);
     const verdict = (summary[TriageCategory.REGRESSION] + summary[TriageCategory.NEW_BUG]) > 0
       ? 'BLOCKED' : 'CLEAR';

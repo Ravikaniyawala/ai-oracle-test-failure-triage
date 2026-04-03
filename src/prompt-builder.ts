@@ -20,8 +20,6 @@ For each failure return:
 - confidence: 0.0 to 1.0
 - reasoning: one sentence
 - suggested_fix: one concrete action the developer should take
-- create_jira: true only for REGRESSION and NEW_BUG with confidence > 0.7
-
 Respond ONLY with valid JSON matching this schema:
 {
   "results": [
@@ -30,8 +28,7 @@ Respond ONLY with valid JSON matching this schema:
       "category": "FLAKY|REGRESSION|ENV_ISSUE|NEW_BUG",
       "confidence": 0.0,
       "reasoning": "string",
-      "suggested_fix": "string",
-      "create_jira": false
+      "suggested_fix": "string"
     }
   ]
 }${instinctBlock}`;
