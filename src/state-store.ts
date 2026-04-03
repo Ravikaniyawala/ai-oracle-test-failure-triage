@@ -40,6 +40,10 @@ export function initDb(): void {
       action_fingerprint TEXT    NOT NULL UNIQUE,
       source             TEXT    NOT NULL DEFAULT 'policy',
       verdict            TEXT    NOT NULL,
+      payload_json       TEXT,
+      risk_score         REAL,
+      decision_reason    TEXT,
+      confidence         REAL,
       executed_at        TEXT,
       execution_ok       INTEGER,
       execution_detail   TEXT,
@@ -47,6 +51,17 @@ export function initDb(): void {
       FOREIGN KEY (failure_id) REFERENCES failures(id)
     );
   `);
+
+  // Additive migrations for DBs created before the audit columns were added.
+  // ALTER TABLE ADD COLUMN is a no-op-safe operation in SQLite when the column
+  // doesn't exist; we catch the error for the case where it already does.
+  const addCol = (col: string, def: string): void => {
+    try { db.exec(`ALTER TABLE actions ADD COLUMN ${col} ${def}`); } catch { /* already exists */ }
+  };
+  addCol('payload_json',    'TEXT');
+  addCol('risk_score',      'REAL');
+  addCol('decision_reason', 'TEXT');
+  addCol('confidence',      'REAL');
 }
 
 export function saveRun(
@@ -106,8 +121,9 @@ export function saveAction(
 ): boolean {
   const info = db.prepare(
     `INSERT OR IGNORE INTO actions
-       (run_id, failure_id, cluster_key, scope, action_type, action_fingerprint, source, verdict)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+       (run_id, failure_id, cluster_key, scope, action_type, action_fingerprint,
+        source, verdict, payload_json, risk_score, decision_reason, confidence)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     runId,
     proposal.failureId ?? null,
@@ -117,6 +133,10 @@ export function saveAction(
     proposal.fingerprint,
     proposal.source,
     decision.verdict,
+    JSON.stringify(proposal),
+    null,                       // risk_score: not computed in Step 1
+    'policy:auto-approved',     // decision_reason: Step 1 always auto-approves
+    decision.confidence,
   );
   return info.changes === 1;
 }

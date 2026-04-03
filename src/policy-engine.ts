@@ -25,10 +25,10 @@ export function computeFingerprint(
 
 /**
  * Propose actions for a single triaged failure.
- * Rules:
- *   - create_jira     → REGRESSION or NEW_BUG with confidence > 0.7
- *   - quarantine_test → FLAKY with retries >= 2
+ * Step 1 rules (only executable actions are emitted):
+ *   - create_jira → REGRESSION or NEW_BUG with confidence > 0.7
  *
+ * quarantine_test is intentionally omitted in Step 1 — no executor exists yet.
  * Fingerprints are keyed on testName + errorHash (not the DB row id) so they
  * remain stable across re-runs of the same pipeline, preventing duplicate
  * Jira tickets when the same test failure recurs.
@@ -58,20 +58,6 @@ export function proposeFailureActions(
       pipelineId,
       source:      'policy',
       fingerprint: computeFingerprint('create_jira', 'failure', stableId),
-    });
-  }
-
-  if (result.category === TriageCategory.FLAKY && result.retries >= 2) {
-    proposals.push({
-      type:        'quarantine_test',
-      scope:       'failure',
-      scopeId:     stableId,
-      failureId,
-      clusterKey:  null,
-      runId,
-      pipelineId,
-      source:      'policy',
-      fingerprint: computeFingerprint('quarantine_test', 'failure', stableId),
     });
   }
 
