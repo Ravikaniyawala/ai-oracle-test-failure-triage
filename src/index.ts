@@ -12,6 +12,7 @@ import {
   saveFeedback,
   saveAgentProposal,
   updateAgentProposalStatus,
+  getPatternStats,
 } from './state-store.js';
 import { createJiraDefect } from './jira-writer.js';
 import { postSlackSummary } from './slack-notifier.js';
@@ -29,6 +30,7 @@ import {
   type AgentProposal,
   type Decision,
   type JiraCreated,
+  type PatternStats,
   type RunSummary,
   type TriageResult,
 } from './types.js';
@@ -188,6 +190,16 @@ async function main(): Promise<void> {
     const runId      = saveRun(PIPELINE_ID, parsed.totalFailures, results);
     const failureIds = saveFailures(runId, results);
 
+    // 2.5. Log historical pattern stats for each failure (explainability, read-only).
+    //      These are surfaced before decisions are made so operators can see context.
+    //      Stats reflect what has happened in past runs — they do not influence decisions.
+    const patternStatsMap = new Map<string, PatternStats>();
+    for (const result of results) {
+      const stats = getPatternStats(result.testName, result.errorHash);
+      patternStatsMap.set(`${result.testName}:${result.errorHash}`, stats);
+      logPatternStats(result.testName, result.errorHash, stats);
+    }
+
     // 3. Propose + decide per-failure actions
     const jiraCreated: JiraCreated[] = [];
 
@@ -260,9 +272,18 @@ async function main(): Promise<void> {
     const summary = summarise(results);
     const verdict = (summary[TriageCategory.REGRESSION] + summary[TriageCategory.NEW_BUG]) > 0
       ? 'BLOCKED' : 'CLEAR';
+
+    const failureSummaries = results.map(r => ({
+      testName:      r.testName,
+      errorHash:     r.errorHash,
+      category:      r.category,
+      confidence:    r.confidence,
+      pattern_stats: patternStatsMap.get(`${r.testName}:${r.errorHash}`) ?? null,
+    }));
+
     writeFileSync(
       'oracle-verdict.json',
-      JSON.stringify({ verdict, ...summary }, null, 2),
+      JSON.stringify({ verdict, ...summary, failures: failureSummaries }, null, 2),
     );
 
     console.log('[oracle] triage complete', summary);
@@ -340,6 +361,22 @@ function executeRetry(testName: string): RetryOutcome {
     console.log(`[oracle] retry failed for "${testName}"`);
     return 'failed';
   }
+}
+
+// ── Explainability helpers ────────────────────────────────────────────────────
+
+/**
+ * Log historical pattern stats for a failure in a structured, human-readable format.
+ *
+ * Helps answer:
+ *   "Have we seen this before?"         → seen=N
+ *   "Did we already create a Jira?"     → jira_created=N
+ *   "Were those Jiras useful?"          → jira_duplicates=N
+ *   "Do retries usually work?"          → retry_passed=N  retry_failed=N
+ */
+function logPatternStats(testName: string, errorHash: string, stats: PatternStats): void {
+  console.log(`[history] ${testName} (${errorHash})`);
+  console.log(`  seen=${stats.seenCount}  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
 }
 
 // ── Summary helper ────────────────────────────────────────────────────────────

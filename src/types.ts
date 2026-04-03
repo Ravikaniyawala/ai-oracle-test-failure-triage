@@ -96,6 +96,25 @@ export interface JiraCreated {
   key:      string;
 }
 
+// ── History / explainability types ───────────────────────────────────────────
+
+/**
+ * Historical signal for a failure pattern (testName + errorHash).
+ * Read-only — never used to influence decisions in this slice.
+ */
+export interface PatternStats {
+  /** Total actions recorded for this testName:errorHash pair. */
+  seenCount:          number;
+  /** create_jira actions that executed successfully (execution_ok = 1). */
+  jiraCreatedCount:   number;
+  /** feedback rows where feedback_type = jira_closed_duplicate. */
+  jiraDuplicateCount: number;
+  /** feedback rows where feedback_type = retry_passed. */
+  retryPassedCount:   number;
+  /** feedback rows where feedback_type = retry_failed. */
+  retryFailedCount:   number;
+}
+
 // ── Feedback types ────────────────────────────────────────────────────────────
 
 export type FeedbackType =
