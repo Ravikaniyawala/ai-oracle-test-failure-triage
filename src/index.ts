@@ -76,7 +76,9 @@ async function main(): Promise<void> {
       const agentProposalId = saveAgentProposal(proposal);
 
       // 2. Run through the decision layer — agents are never trusted executors.
-      const agentDecision  = decideAgentProposal(proposal);
+      //    Fetch pattern stats so history rules can apply to retry_test proposals.
+      const agentStats    = getPatternStats(proposal.testName, proposal.errorHash);
+      const agentDecision = decideAgentProposal(proposal, agentStats);
 
       // 3. Map to internal ActionProposal + Decision for the shared actions ledger.
       const actionProposal = toActionProposal(proposal, agentDecision.fingerprint);
@@ -90,6 +92,10 @@ async function main(): Promise<void> {
       updateAgentProposalStatus(
         agentProposalId, agentDecision.verdict, agentDecision.reason, agentDecision.fingerprint,
       );
+
+      if (agentDecision.reason.startsWith('history:')) {
+        logHistoryDecision(proposal.proposalType, agentDecision.verdict, proposal.testName, agentDecision.reason, agentStats);
+      }
 
       if (agentDecision.verdict === 'rejected') {
         console.log(`[oracle] agent proposal rejected: ${proposal.proposalType} — ${agentDecision.reason}`);
@@ -207,17 +213,28 @@ async function main(): Promise<void> {
       const result    = results[i] as TriageResult;
       const failureId = failureIds[i] as number;
 
+      // Stats for this failure are already in patternStatsMap from step 2.5.
+      const failureStats = patternStatsMap.get(`${result.testName}:${result.errorHash}`);
+
       for (const proposal of proposeFailureActions(result, failureId, runId, PIPELINE_ID)) {
         const jiraAlreadyCreated = proposal.type === 'create_jira'
           ? wasJiraCreatedFor(proposal.fingerprint)
           : false;
 
-        const decision = decide(proposal, result.confidence, { jiraAlreadyCreated });
+        const decision = decide(proposal, result.confidence, {
+          jiraAlreadyCreated,
+          jiraDuplicateCount: failureStats?.jiraDuplicateCount,
+          jiraCreatedCount:   failureStats?.jiraCreatedCount,
+        });
         const inserted = saveAction(runId, proposal, decision);
 
         if (!inserted) {
           console.log(`[oracle] skipping duplicate action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
           continue;
+        }
+
+        if (decision.reason.startsWith('history:') && failureStats !== undefined) {
+          logHistoryDecision(proposal.type, decision.verdict, result.testName, decision.reason, failureStats);
         }
 
         if (decision.verdict !== 'approved') {
@@ -369,7 +386,7 @@ function executeRetry(testName: string): RetryOutcome {
  * Log historical pattern stats for a failure in a structured, human-readable format.
  *
  * Helps answer:
- *   "Have we seen this before?"         → seen=N
+ *   "Have we seen this before?"         → actions=N
  *   "Did we already create a Jira?"     → jira_created=N
  *   "Were those Jiras useful?"          → jira_duplicates=N
  *   "Do retries usually work?"          → retry_passed=N  retry_failed=N
@@ -377,6 +394,31 @@ function executeRetry(testName: string): RetryOutcome {
 function logPatternStats(testName: string, errorHash: string, stats: PatternStats): void {
   console.log(`[history] ${testName} (${errorHash})`);
   console.log(`  actions=${stats.actionCount}  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
+}
+
+/**
+ * Log when a decision was changed because of historical pattern stats.
+ * Called only when decision.reason starts with 'history:'.
+ *
+ * Helps answer:
+ *   "Why was this Jira not created?"  → history:duplicate_pattern
+ *   "Why was this retry approved?"    → history:retry_success_pattern
+ */
+function logHistoryDecision(
+  actionType: string,
+  verdict: string,
+  testName: string,
+  reason: string,
+  stats: PatternStats,
+): void {
+  console.log(`[history-decision] ${actionType} ${verdict} for "${testName}"`);
+  console.log(`  reason=${reason}`);
+  if (actionType === 'create_jira') {
+    console.log(`  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}`);
+  }
+  if (actionType === 'retry_test') {
+    console.log(`  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
+  }
 }
 
 // ── Summary helper ────────────────────────────────────────────────────────────
