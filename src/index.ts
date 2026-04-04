@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import { writeFileSync } from 'fs';
+import { appendFileSync, writeFileSync } from 'fs';
 import { parseReport } from './report-parser.js';
 import { triageFailures } from './triage.js';
 import {
@@ -189,10 +189,38 @@ async function main(): Promise<void> {
     console.log(`[oracle] detected format: ${parsed.detectedFormat}`);
 
     if (parsed.failures.length === 0) {
-      console.log('[oracle] no failures found, exiting');
+      console.log('[oracle] no failures found — verdict: CLEAR');
+
+      // Write verdict artifact (unchanged structure).
       writeFileSync('oracle-verdict.json', JSON.stringify({
         verdict: 'CLEAR', FLAKY: 0, REGRESSION: 0, NEW_BUG: 0, ENV_ISSUE: 0,
       }, null, 2));
+
+      // Write minimal decision summary artifact.
+      writeFileSync('oracle-decision-summary.md', [
+        '# Oracle Decision Summary',
+        '',
+        '✅ Verdict: CLEAR',
+        '',
+        '0 failures detected — all tests passed.',
+        '',
+        'No actions were proposed or executed.',
+        '',
+      ].join('\n'));
+
+      // Append to GitHub Actions Step Summary if running in Actions.
+      const stepSummaryPath = process.env['GITHUB_STEP_SUMMARY'];
+      if (stepSummaryPath) {
+        appendFileSync(stepSummaryPath, [
+          '## ✅ Oracle verdict: CLEAR',
+          '',
+          '0 failures detected — all tests passed.',
+          '',
+          'No triage actions were required.',
+          '',
+        ].join('\n'));
+      }
+
       process.exit(0);
     }
 
