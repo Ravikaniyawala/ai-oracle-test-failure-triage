@@ -86,7 +86,13 @@ async function main(): Promise<void> {
 
       // 4. Persist to the shared actions table (INSERT OR IGNORE for idempotency).
       //    This is the unified execution ledger for both policy and agent work.
-      saveAction(AGENT_MODE_RUN_ID, actionProposal, decision);
+      //    Returns false when the fingerprint already exists — skip execution,
+      //    same as the normal CI path, to prevent duplicate side effects.
+      const agentInserted = saveAction(AGENT_MODE_RUN_ID, actionProposal, decision);
+      if (!agentInserted) {
+        console.log(`[oracle] skipping duplicate agent action ${proposal.proposalType} (fingerprint ${agentDecision.fingerprint})`);
+        continue;
+      }
 
       // 5. Update agent_proposals status + link to action fingerprint.
       updateAgentProposalStatus(
@@ -196,9 +202,9 @@ async function main(): Promise<void> {
     const runId      = saveRun(PIPELINE_ID, parsed.totalFailures, results);
     const failureIds = saveFailures(runId, results);
 
-    // 2.5. Log historical pattern stats for each failure (explainability, read-only).
-    //      These are surfaced before decisions are made so operators can see context.
-    //      Stats reflect what has happened in past runs — they do not influence decisions.
+    // 2.5. Compute and log historical pattern stats per failure.
+    //      Stats are surfaced before decisions for explainability (Slice 3.1).
+    //      They also feed into decision logic for create_jira and retry_test (Slice 3.2).
     const patternStatsMap = new Map<string, PatternStats>();
     for (const result of results) {
       const stats = getPatternStats(result.testName, result.errorHash);

@@ -100,7 +100,10 @@ export interface JiraCreated {
 
 /**
  * Historical signal for a failure pattern (testName + errorHash).
- * Read-only — never used to influence decisions in this slice.
+ * Used in Slice 3.1 for explainability logging and verdict output (read-only).
+ * Used in Slice 3.2 to influence a small set of decisions explicitly:
+ *   - jiraDuplicateCount / jiraCreatedCount → may suppress create_jira
+ *   - retryPassedCount / retryFailedCount   → may override retry_test verdict
  */
 export interface PatternStats {
   /** Total action rows recorded for this testName:errorHash pair.
