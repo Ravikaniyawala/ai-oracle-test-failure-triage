@@ -25,25 +25,36 @@ export function explainDecision(
  * Returns true when a decision is worth surfacing in CI logs or summary output.
  *
  * Notable means:
- *   - rejected or held  → something was blocked or deferred, operator should know why
+ *   - rejected or held   → something was blocked or deferred; operator should know why
  *   - history-influenced → system used past data to change the default outcome
  *
  * Auto-approved policy actions (policy:auto-approved) are intentionally excluded
  * to keep logs readable.
  */
 export function isNotable(verdict: string, reason: string): boolean {
-  return verdict === 'rejected' || verdict === 'held' || reason.startsWith('history:');
+  if (verdict === 'rejected') return true;
+  if (verdict === 'held')     return true;
+  if (reason.startsWith('history:')) return true;
+  return false;
 }
 
+/**
+ * Build the parenthetical stats context appended to a history-influenced explanation.
+ * Returns an empty string for reasons that carry no useful stat context.
+ */
 function statsContext(reason: string, stats?: PatternStats): string {
   if (!stats) return '';
-  switch (reason) {
-    case 'history:duplicate_pattern':
-      return `jira_created=${stats.jiraCreatedCount}, jira_duplicates=${stats.jiraDuplicateCount}`;
-    case 'history:retry_success_pattern':
-    case 'history:retry_failure_pattern':
-      return `retry_passed=${stats.retryPassedCount}, retry_failed=${stats.retryFailedCount}`;
-    default:
-      return '';
+
+  if (reason === 'history:duplicate_pattern') {
+    return `jira_created=${stats.jiraCreatedCount}, jira_duplicates=${stats.jiraDuplicateCount}`;
   }
+
+  if (
+    reason === 'history:retry_success_pattern' ||
+    reason === 'history:retry_failure_pattern'
+  ) {
+    return `retry_passed=${stats.retryPassedCount}, retry_failed=${stats.retryFailedCount}`;
+  }
+
+  return '';
 }
