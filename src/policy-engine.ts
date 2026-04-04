@@ -7,6 +7,7 @@ import {
   type AgentDecision,
   type AgentProposal,
   type Decision,
+  type PatternStats,
   type TriageResult,
 } from './types.js';
 
@@ -82,32 +83,37 @@ export function proposeRunActions(runId: number, pipelineId: string): ActionProp
 /**
  * Decide verdict for a policy-sourced action proposal.
  *
- * History context (Slice 1):
- *   - jiraAlreadyCreated: true → reject create_jira with audit reason
- *     'history:jira_already_created' so the decision is persisted and visible.
+ * History rules for create_jira (applied in order, first match wins):
+ *   1. jiraAlreadyCreated      → reject: 'history:jira_already_created'
+ *   2. duplicate_pattern       → reject: 'history:duplicate_pattern'
+ *      Rule: jiraDuplicateCount >= 2 AND jiraDuplicateCount >= jiraCreatedCount / 2
+ *      Rationale: if at least half of all Jiras for this pattern were closed as
+ *      duplicates, creating another is likely wasteful.
  *
  * All other policy proposals are auto-approved.
  */
 export function decide(
   proposal: ActionProposal,
   confidence: number,
-  history: { jiraAlreadyCreated: boolean } = { jiraAlreadyCreated: false },
+  history: {
+    jiraAlreadyCreated:  boolean;
+    jiraDuplicateCount?: number;
+    jiraCreatedCount?:   number;
+  } = { jiraAlreadyCreated: false },
 ): Decision {
-  if (proposal.type === 'create_jira' && history.jiraAlreadyCreated) {
-    return {
-      proposal,
-      verdict:    'rejected',
-      confidence,
-      reason:     'history:jira_already_created',
-    };
+  if (proposal.type === 'create_jira') {
+    if (history.jiraAlreadyCreated) {
+      return { proposal, verdict: 'rejected', confidence, reason: 'history:jira_already_created' };
+    }
+
+    const dupes   = history.jiraDuplicateCount ?? 0;
+    const created = history.jiraCreatedCount   ?? 0;
+    if (dupes >= 2 && dupes >= created / 2) {
+      return { proposal, verdict: 'rejected', confidence, reason: 'history:duplicate_pattern' };
+    }
   }
 
-  return {
-    proposal,
-    verdict:    'approved',
-    confidence,
-    reason:     'policy:auto-approved',
-  };
+  return { proposal, verdict: 'approved', confidence, reason: 'policy:auto-approved' };
 }
 
 // ── Agent proposal decisions ──────────────────────────────────────────────────
@@ -124,11 +130,21 @@ const RETRY_HOLD_THRESHOLD    = 0.5;
  * Agents are untrusted proposers — they never bypass this layer.
  *
  * Supported proposal types:
- *   - retry_test          → confidence-gated: approved / held / rejected
+ *   - retry_test           → history rules first, then confidence-gated fallback
  *   - request_human_review → always approved (low-risk acknowledgement)
- *   - anything else       → rejected immediately
+ *   - anything else        → rejected immediately
+ *
+ * retry_test history rules (applied before confidence thresholds, first match wins):
+ *   - retryPassedCount >= 2 AND retryPassedCount > retryFailedCount
+ *       → approve: 'history:retry_success_pattern'
+ *   - retryFailedCount >= 2 AND retryFailedCount >= retryPassedCount
+ *       → reject:  'history:retry_failure_pattern'
+ *   - no history match → fall through to confidence thresholds
+ *
+ * @param stats Optional PatternStats for history-aware retry decisions.
+ *              If omitted, only confidence thresholds apply.
  */
-export function decideAgentProposal(proposal: AgentProposal): AgentDecision {
+export function decideAgentProposal(proposal: AgentProposal, stats?: PatternStats): AgentDecision {
   const fingerprint = computeFingerprint(
     proposal.proposalType,
     'failure',
@@ -145,6 +161,18 @@ export function decideAgentProposal(proposal: AgentProposal): AgentDecision {
   }
 
   if (proposal.proposalType === 'retry_test') {
+    // History rules take priority — they are based on real observed outcomes,
+    // which is stronger evidence than the proposing agent's confidence score.
+    if (stats !== undefined) {
+      if (stats.retryPassedCount >= 2 && stats.retryPassedCount > stats.retryFailedCount) {
+        return { proposal, verdict: 'approved', reason: 'history:retry_success_pattern', fingerprint };
+      }
+      if (stats.retryFailedCount >= 2 && stats.retryFailedCount >= stats.retryPassedCount) {
+        return { proposal, verdict: 'rejected', reason: 'history:retry_failure_pattern', fingerprint };
+      }
+    }
+
+    // No history match — fall back to confidence thresholds.
     if (proposal.confidence >= RETRY_APPROVE_THRESHOLD) {
       return { proposal, verdict: 'approved', reason: 'agent:retry_test:high_confidence', fingerprint };
     }

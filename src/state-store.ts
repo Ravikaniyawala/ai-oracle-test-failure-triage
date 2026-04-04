@@ -288,7 +288,9 @@ export function updateAgentProposalStatus(
  * retryPassedCount   — feedback rows marked retry_passed for this pattern
  * retryFailedCount   — feedback rows marked retry_failed for this pattern
  *
- * Read-only. Never influences decisions.
+ * Slice 3.1: used for explainability logging and oracle-verdict.json output.
+ * Slice 3.2: jiraDuplicateCount/jiraCreatedCount and retryPassedCount/retryFailedCount
+ * are passed into the policy engine to influence a small set of decisions explicitly.
  */
 export function getPatternStats(testName: string, errorHash: string): PatternStats {
   const scopeId = `${testName}:${errorHash}`;

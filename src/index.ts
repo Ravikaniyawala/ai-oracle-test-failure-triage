@@ -76,7 +76,9 @@ async function main(): Promise<void> {
       const agentProposalId = saveAgentProposal(proposal);
 
       // 2. Run through the decision layer — agents are never trusted executors.
-      const agentDecision  = decideAgentProposal(proposal);
+      //    Fetch pattern stats so history rules can apply to retry_test proposals.
+      const agentStats    = getPatternStats(proposal.testName, proposal.errorHash);
+      const agentDecision = decideAgentProposal(proposal, agentStats);
 
       // 3. Map to internal ActionProposal + Decision for the shared actions ledger.
       const actionProposal = toActionProposal(proposal, agentDecision.fingerprint);
@@ -84,12 +86,22 @@ async function main(): Promise<void> {
 
       // 4. Persist to the shared actions table (INSERT OR IGNORE for idempotency).
       //    This is the unified execution ledger for both policy and agent work.
-      saveAction(AGENT_MODE_RUN_ID, actionProposal, decision);
+      //    Returns false when the fingerprint already exists — skip execution,
+      //    same as the normal CI path, to prevent duplicate side effects.
+      const agentInserted = saveAction(AGENT_MODE_RUN_ID, actionProposal, decision);
+      if (!agentInserted) {
+        console.log(`[oracle] skipping duplicate agent action ${proposal.proposalType} (fingerprint ${agentDecision.fingerprint})`);
+        continue;
+      }
 
       // 5. Update agent_proposals status + link to action fingerprint.
       updateAgentProposalStatus(
         agentProposalId, agentDecision.verdict, agentDecision.reason, agentDecision.fingerprint,
       );
+
+      if (agentDecision.reason.startsWith('history:')) {
+        logHistoryDecision(proposal.proposalType, agentDecision.verdict, proposal.testName, agentDecision.reason, agentStats);
+      }
 
       if (agentDecision.verdict === 'rejected') {
         console.log(`[oracle] agent proposal rejected: ${proposal.proposalType} — ${agentDecision.reason}`);
@@ -190,9 +202,9 @@ async function main(): Promise<void> {
     const runId      = saveRun(PIPELINE_ID, parsed.totalFailures, results);
     const failureIds = saveFailures(runId, results);
 
-    // 2.5. Log historical pattern stats for each failure (explainability, read-only).
-    //      These are surfaced before decisions are made so operators can see context.
-    //      Stats reflect what has happened in past runs — they do not influence decisions.
+    // 2.5. Compute and log historical pattern stats per failure.
+    //      Stats are surfaced before decisions for explainability (Slice 3.1).
+    //      They also feed into decision logic for create_jira and retry_test (Slice 3.2).
     const patternStatsMap = new Map<string, PatternStats>();
     for (const result of results) {
       const stats = getPatternStats(result.testName, result.errorHash);
@@ -207,17 +219,28 @@ async function main(): Promise<void> {
       const result    = results[i] as TriageResult;
       const failureId = failureIds[i] as number;
 
+      // Stats for this failure are already in patternStatsMap from step 2.5.
+      const failureStats = patternStatsMap.get(`${result.testName}:${result.errorHash}`);
+
       for (const proposal of proposeFailureActions(result, failureId, runId, PIPELINE_ID)) {
         const jiraAlreadyCreated = proposal.type === 'create_jira'
           ? wasJiraCreatedFor(proposal.fingerprint)
           : false;
 
-        const decision = decide(proposal, result.confidence, { jiraAlreadyCreated });
+        const decision = decide(proposal, result.confidence, {
+          jiraAlreadyCreated,
+          jiraDuplicateCount: failureStats?.jiraDuplicateCount,
+          jiraCreatedCount:   failureStats?.jiraCreatedCount,
+        });
         const inserted = saveAction(runId, proposal, decision);
 
         if (!inserted) {
           console.log(`[oracle] skipping duplicate action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
           continue;
+        }
+
+        if (decision.reason.startsWith('history:') && failureStats !== undefined) {
+          logHistoryDecision(proposal.type, decision.verdict, result.testName, decision.reason, failureStats);
         }
 
         if (decision.verdict !== 'approved') {
@@ -369,7 +392,7 @@ function executeRetry(testName: string): RetryOutcome {
  * Log historical pattern stats for a failure in a structured, human-readable format.
  *
  * Helps answer:
- *   "Have we seen this before?"         → seen=N
+ *   "Have we seen this before?"         → actions=N
  *   "Did we already create a Jira?"     → jira_created=N
  *   "Were those Jiras useful?"          → jira_duplicates=N
  *   "Do retries usually work?"          → retry_passed=N  retry_failed=N
@@ -377,6 +400,31 @@ function executeRetry(testName: string): RetryOutcome {
 function logPatternStats(testName: string, errorHash: string, stats: PatternStats): void {
   console.log(`[history] ${testName} (${errorHash})`);
   console.log(`  actions=${stats.actionCount}  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
+}
+
+/**
+ * Log when a decision was changed because of historical pattern stats.
+ * Called only when decision.reason starts with 'history:'.
+ *
+ * Helps answer:
+ *   "Why was this Jira not created?"  → history:duplicate_pattern
+ *   "Why was this retry approved?"    → history:retry_success_pattern
+ */
+function logHistoryDecision(
+  actionType: string,
+  verdict: string,
+  testName: string,
+  reason: string,
+  stats: PatternStats,
+): void {
+  console.log(`[history-decision] ${actionType} ${verdict} for "${testName}"`);
+  console.log(`  reason=${reason}`);
+  if (actionType === 'create_jira') {
+    console.log(`  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}`);
+  }
+  if (actionType === 'retry_test') {
+    console.log(`  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
+  }
 }
 
 // ── Summary helper ────────────────────────────────────────────────────────────
