@@ -23,12 +23,14 @@ import { proposeFailureActions, proposeRunActions, decide, decideAgentProposal }
 import { ingestFeedback } from './feedback-processor.js';
 import { loadAgentProposals } from './agent-proposal-loader.js';
 import { writeHeldActions } from './held-actions-writer.js';
+import { explainDecision, isNotable } from './decision-explainer.js';
 import {
   TriageCategory,
   type ActionProposal,
   type AgentDecision,
   type AgentProposal,
   type Decision,
+  type DecisionEntry,
   type JiraCreated,
   type PatternStats,
   type RunSummary,
@@ -99,18 +101,20 @@ async function main(): Promise<void> {
         agentProposalId, agentDecision.verdict, agentDecision.reason, agentDecision.fingerprint,
       );
 
-      if (agentDecision.reason.startsWith('history:')) {
-        logHistoryDecision(proposal.proposalType, agentDecision.verdict, proposal.testName, agentDecision.reason, agentStats);
+      // Log all notable agent decisions — agents are never auto-approved so most will surface.
+      const agentExplanation = explainDecision(
+        proposal.proposalType, agentDecision.verdict, agentDecision.reason, agentStats,
+      );
+      if (isNotable(agentDecision.verdict, agentDecision.reason)) {
+        console.log(`[decision] ${agentExplanation} — ${proposal.testName}`);
       }
 
       if (agentDecision.verdict === 'rejected') {
-        console.log(`[oracle] agent proposal rejected: ${proposal.proposalType} — ${agentDecision.reason}`);
         continue;
       }
 
       if (agentDecision.verdict === 'held') {
         heldDecisions.push(agentDecision);
-        console.log(`[oracle] agent proposal held: ${proposal.proposalType} — ${agentDecision.reason}`);
         continue;
       }
 
@@ -213,7 +217,8 @@ async function main(): Promise<void> {
     }
 
     // 3. Propose + decide per-failure actions
-    const jiraCreated: JiraCreated[] = [];
+    const jiraCreated:  JiraCreated[]    = [];
+    const decisionLog:  DecisionEntry[]  = [];
 
     for (let i = 0; i < results.length; i++) {
       const result    = results[i] as TriageResult;
@@ -239,14 +244,16 @@ async function main(): Promise<void> {
           continue;
         }
 
-        if (decision.reason.startsWith('history:') && failureStats !== undefined) {
-          logHistoryDecision(proposal.type, decision.verdict, result.testName, decision.reason, failureStats);
+        // Build explanation and collect for summary artifact (all decisions).
+        const explanation = explainDecision(proposal.type, decision.verdict, decision.reason, failureStats);
+        decisionLog.push({ actionType: proposal.type, verdict: decision.verdict, reason: decision.reason, testName: result.testName, explanation });
+
+        // Log notable decisions only — keeps CI output readable.
+        if (isNotable(decision.verdict, decision.reason)) {
+          console.log(`[decision] ${explanation} — ${result.testName}`);
         }
 
-        if (decision.verdict !== 'approved') {
-          console.log(`[oracle] action ${proposal.type} ${decision.verdict} — ${decision.reason}`);
-          continue;
-        }
+        if (decision.verdict !== 'approved') continue;
 
         if (proposal.type === 'create_jira') {
           const key = await createJiraDefect(result);
@@ -272,13 +279,23 @@ async function main(): Promise<void> {
         continue;
       }
 
-      if (decision.verdict !== 'approved') {
-        console.log(`[oracle] action ${proposal.type} ${decision.verdict} — ${decision.reason}`);
-        continue;
+      const explanation = explainDecision(proposal.type, decision.verdict, decision.reason);
+      decisionLog.push({ actionType: proposal.type, verdict: decision.verdict, reason: decision.reason, explanation });
+
+      if (isNotable(decision.verdict, decision.reason)) {
+        console.log(`[decision] ${explanation}`);
       }
 
+      if (decision.verdict !== 'approved') continue;
+
       if (proposal.type === 'notify_slack') {
-        await postSlackSummary(results, jiraCreated, PIPELINE_ID);
+        // Pass history-influenced decisions as compact highlights to Slack.
+        const highlights = decisionLog
+          .filter(d => d.reason.startsWith('history:'))
+          .slice(0, 5)
+          .map(d => d.testName ? `${d.explanation} — ${d.testName.slice(0, 60)}` : d.explanation);
+
+        await postSlackSummary(results, jiraCreated, PIPELINE_ID, highlights);
         recordActionExecution(proposal.fingerprint, {
           ok:        true,
           detail:    'slack posted',
@@ -308,6 +325,9 @@ async function main(): Promise<void> {
       'oracle-verdict.json',
       JSON.stringify({ verdict, ...summary, failures: failureSummaries }, null, 2),
     );
+
+    // 7. Decision summary artifact
+    writeDecisionSummary(decisionLog, PIPELINE_ID, parsed.totalFailures);
 
     console.log('[oracle] triage complete', summary);
   } catch (err) {
@@ -403,28 +423,50 @@ function logPatternStats(testName: string, errorHash: string, stats: PatternStat
 }
 
 /**
- * Log when a decision was changed because of historical pattern stats.
- * Called only when decision.reason starts with 'history:'.
+ * Write oracle-decision-summary.md — a human-readable artifact grouping all
+ * decisions by verdict and highlighting history-influenced ones.
  *
- * Helps answer:
- *   "Why was this Jira not created?"  → history:duplicate_pattern
- *   "Why was this retry approved?"    → history:retry_success_pattern
+ * Sections: Approved · Rejected · Held · History-influenced
+ * Skipped when decisionLog is empty.
  */
-function logHistoryDecision(
-  actionType: string,
-  verdict: string,
-  testName: string,
-  reason: string,
-  stats: PatternStats,
+function writeDecisionSummary(
+  decisionLog:   DecisionEntry[],
+  pipelineId:    string,
+  totalFailures: number,
 ): void {
-  console.log(`[history-decision] ${actionType} ${verdict} for "${testName}"`);
-  console.log(`  reason=${reason}`);
-  if (actionType === 'create_jira') {
-    console.log(`  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}`);
-  }
-  if (actionType === 'retry_test') {
-    console.log(`  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
-  }
+  if (decisionLog.length === 0) return;
+
+  const approved    = decisionLog.filter(d => d.verdict === 'approved');
+  const rejected    = decisionLog.filter(d => d.verdict === 'rejected');
+  const held        = decisionLog.filter(d => d.verdict === 'held');
+  const historical  = decisionLog.filter(d => d.reason.startsWith('history:'));
+
+  const entryLine = (d: DecisionEntry): string =>
+    `- \`${d.actionType}\`${d.testName ? ` for "${d.testName}"` : ''} — ${d.explanation.replace(/^[^ ]+ [^ ]+ — /, '')}`;
+
+  const section = (title: string, entries: DecisionEntry[]): string => {
+    const header = `## ${title} (${entries.length})`;
+    if (entries.length === 0) return `${header}\n_none_`;
+    return `${header}\n${entries.map(entryLine).join('\n')}`;
+  };
+
+  const lines = [
+    `# Oracle Decision Summary — Pipeline ${pipelineId}`,
+    '',
+    `> ${totalFailures} failure(s) triaged · ${new Date().toISOString()}`,
+    '',
+    section('Approved', approved),
+    '',
+    section('Rejected', rejected),
+    '',
+    section('Held', held),
+    '',
+    section('History-influenced', historical),
+    '',
+  ];
+
+  writeFileSync('oracle-decision-summary.md', lines.join('\n'));
+  console.log(`[oracle] decision summary written to oracle-decision-summary.md (${decisionLog.length} decision(s))`);
 }
 
 // ── Summary helper ────────────────────────────────────────────────────────────

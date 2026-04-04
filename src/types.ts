@@ -99,6 +99,20 @@ export interface JiraCreated {
 // ── History / explainability types ───────────────────────────────────────────
 
 /**
+ * A single decision entry collected during a triage run.
+ * Used to build oracle-decision-summary.md and Slack highlights.
+ */
+export interface DecisionEntry {
+  actionType:  string;
+  verdict:     string;
+  reason:      string;
+  /** Test name for failure-scoped actions; undefined for run-scoped actions. */
+  testName?:   string;
+  /** Pre-formatted explanation line from explainDecision(). */
+  explanation: string;
+}
+
+/**
  * Historical signal for a failure pattern (testName + errorHash).
  * Used in Slice 3.1 for explainability logging and verdict output (read-only).
  * Used in Slice 3.2 to influence a small set of decisions explicitly:

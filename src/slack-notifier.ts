@@ -6,6 +6,7 @@ export async function postSlackSummary(
   results: TriageResult[],
   jiraCreated: JiraCreated[],
   pipelineId: string,
+  highlights: string[] = [],
 ): Promise<void> {
   if (process.env['DRY_RUN'] === 'true') {
     console.log('[oracle] DRY_RUN — skipping Slack, triage result:');
@@ -36,6 +37,13 @@ export async function postSlackSummary(
     lines.push('', '*Jira defects created:*');
     for (const f of jiraCreated) {
       lines.push(`• [${f.key}] ${f.testName.slice(0, 80)} (${f.category})`);
+    }
+  }
+
+  if (highlights.length > 0) {
+    lines.push('', '*Decision highlights:*');
+    for (const h of highlights) {
+      lines.push(`• ${h}`);
     }
   }
 
