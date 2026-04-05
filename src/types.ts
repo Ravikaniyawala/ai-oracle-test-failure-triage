@@ -156,6 +156,49 @@ export interface FeedbackEntry {
   createdAt:          string;
 }
 
+// ── PR / change context types ─────────────────────────────────────────────────
+
+/**
+ * A Jira issue linked in the PR description (e.g. "Fixes QA-123").
+ * Populated from ORACLE_PR_CONTEXT_PATH — never fetched live.
+ */
+export interface LinkedJira {
+  key:        string;
+  title:      string;
+  issueType:  string;
+  team?:      string;
+}
+
+/**
+ * Lightweight change context read from ORACLE_PR_CONTEXT_PATH.
+ * All fields except pipelineId and filesChanged are optional because
+ * not every CI environment exposes PR metadata.
+ */
+export interface PrContext {
+  pipelineId:   string;
+  prNumber?:    number;
+  title?:       string;
+  author?:      string;
+  baseBranch?:  string;
+  headBranch?:  string;
+  filesChanged: string[];
+  linkedJira:   LinkedJira[];
+}
+
+/**
+ * Read-only relevance signal computed per failure from PrContext.
+ * Never influences decisions — used for logging and summary output only.
+ *
+ * high    — direct file overlap or 2+ keyword matches with changed files
+ * medium  — 1 keyword match
+ * low     — no overlap detected
+ * unknown — no PR context available
+ */
+export interface PrRelevance {
+  level:   'high' | 'medium' | 'low' | 'unknown';
+  reasons: string[];
+}
+
 // ── Agent proposal types ──────────────────────────────────────────────────────
 
 // Lifecycle status of a row in agent_proposals table.

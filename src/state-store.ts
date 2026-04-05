@@ -7,6 +7,7 @@ import {
   type Decision,
   type FeedbackEntry,
   type PatternStats,
+  type PrContext,
   type TriageResult,
 } from './types.js';
 
@@ -69,6 +70,18 @@ export function initDb(): void {
       old_value          TEXT,
       new_value          TEXT,
       notes              TEXT,
+      created_at         TEXT    NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS pr_context (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      pipeline_id        TEXT    NOT NULL,
+      pr_number          INTEGER,
+      title              TEXT,
+      author             TEXT,
+      base_branch        TEXT,
+      head_branch        TEXT,
+      files_changed_json TEXT    NOT NULL,
+      linked_jira_json   TEXT    NOT NULL,
       created_at         TEXT    NOT NULL
     );
     CREATE TABLE IF NOT EXISTS agent_proposals (
@@ -335,6 +348,30 @@ export function getPatternStats(testName: string, errorHash: string): PatternSta
   ).get(testName, errorHash) as { count: number }).count;
 
   return { actionCount, jiraCreatedCount, jiraDuplicateCount, retryPassedCount, retryFailedCount };
+}
+
+/**
+ * Persist a PR context snapshot for the current pipeline run.
+ * Called once per triage run when ORACLE_PR_CONTEXT_PATH is provided.
+ * Read-only at decision time — stored here for audit and future querying.
+ */
+export function savePrContext(ctx: PrContext): void {
+  db.prepare(
+    `INSERT INTO pr_context
+       (pipeline_id, pr_number, title, author, base_branch, head_branch,
+        files_changed_json, linked_jira_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    ctx.pipelineId,
+    ctx.prNumber      ?? null,
+    ctx.title         ?? null,
+    ctx.author        ?? null,
+    ctx.baseBranch    ?? null,
+    ctx.headBranch    ?? null,
+    JSON.stringify(ctx.filesChanged),
+    JSON.stringify(ctx.linkedJira),
+    new Date().toISOString(),
+  );
 }
 
 export function getRecentFailurePattern(
