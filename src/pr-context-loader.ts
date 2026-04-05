@@ -56,15 +56,30 @@ export function loadPrContext(filePath: string): PrContext | null {
   const filesChanged: string[] = obj['filesChanged']
     .filter((f): f is string => typeof f === 'string');
 
-  const linkedJira: LinkedJira[] = (obj['linkedJira'] as unknown[])
-    .filter((j): j is Record<string, unknown> => typeof j === 'object' && j !== null && !Array.isArray(j))
-    .filter(j => typeof j['key'] === 'string' && typeof j['title'] === 'string' && typeof j['issueType'] === 'string')
-    .map(j => ({
-      key:       j['key']       as string,
-      title:     j['title']     as string,
-      issueType: j['issueType'] as string,
-      team:      typeof j['team'] === 'string' ? j['team'] : undefined,
-    }));
+  const rawJira = obj['linkedJira'] as unknown[];
+  const validJiraObjects = rawJira.filter(
+    (j): j is Record<string, unknown> => typeof j === 'object' && j !== null && !Array.isArray(j),
+  );
+  const droppedCount = rawJira.length - validJiraObjects.length;
+  if (droppedCount > 0) {
+    console.warn(`[pr-context] ${droppedCount} linkedJira entry/entries skipped (not an object)`);
+  }
+
+  // Only key is required — title, issueType, team are optional.
+  // CI workflows often emit key-only Jira refs; dropping them would silently
+  // discard valid linked issue information.
+  const linkedJiraWithKey = validJiraObjects.filter(j => typeof j['key'] === 'string');
+  const droppedNoKey = validJiraObjects.length - linkedJiraWithKey.length;
+  if (droppedNoKey > 0) {
+    console.warn(`[pr-context] ${droppedNoKey} linkedJira entry/entries skipped (missing key)`);
+  }
+
+  const linkedJira: LinkedJira[] = linkedJiraWithKey.map(j => ({
+    key:       j['key']       as string,
+    title:     typeof j['title']     === 'string' ? j['title']     : undefined,
+    issueType: typeof j['issueType'] === 'string' ? j['issueType'] : undefined,
+    team:      typeof j['team']      === 'string' ? j['team']      : undefined,
+  }));
 
   const ctx: PrContext = {
     pipelineId:  obj['pipelineId'] as string,

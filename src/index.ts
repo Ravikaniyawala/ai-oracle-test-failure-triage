@@ -215,7 +215,7 @@ async function main(): Promise<void> {
           );
           if (prContext.linkedJira.length > 0) {
             for (const j of prContext.linkedJira) {
-              console.log(`[pr-context]   linked: ${j.key} (${j.issueType}) — ${j.title}`);
+              console.log(`[pr-context]   linked: ${j.key}${j.issueType ? ` (${j.issueType})` : ''}${j.title ? ` — ${j.title}` : ''}`);
             }
           }
         }
@@ -564,8 +564,12 @@ function writeDecisionSummary(
       lines.push('');
       lines.push('**Linked Jira issues:**');
       for (const j of prContext.linkedJira) {
-        const team = j.team !== undefined ? ` · ${j.team}` : '';
-        lines.push(`- \`${j.key}\` (${j.issueType}${team}) — ${j.title}`);
+        const meta: string[] = [];
+        if (j.issueType !== undefined) meta.push(j.issueType);
+        if (j.team      !== undefined) meta.push(j.team);
+        const metaSuffix  = meta.length > 0 ? ` (${meta.join(' · ')})` : '';
+        const titleSuffix = j.title !== undefined ? ` — ${j.title}` : '';
+        lines.push(`- \`${j.key}\`${metaSuffix}${titleSuffix}`);
       }
     }
 
