@@ -121,22 +121,39 @@ jobs:
           REPO="${{ github.repository }}"
 
           PR_DATA=$(gh pr view "$BRANCH" --repo "$REPO" \
-            --json number,title,author,baseRefName,headRefName,files 2>/dev/null || echo "")
+            --json number,title,author,baseRefName,headRefName,files,body,commits 2>/dev/null || echo "")
 
           if [ -z "$PR_DATA" ]; then
             echo "[pr-context] no open PR found for branch $BRANCH — skipping enrichment"
             exit 0
           fi
 
+          # Extract Jira keys from: title, body, branch name, and commit messages.
+          # jq collects all text into one newline-separated stream; grep pulls keys;
+          # awk deduplicates while preserving first-seen order.
+          JIRA_KEYS=$(echo "$PR_DATA" | jq -r '
+            [ .title // "",
+              .body // "",
+              .headRefName // "",
+              (.commits // [] | .[].messageHeadline // ""),
+              (.commits // [] | .[].messageBody // "")
+            ] | join("\n")
+          ' | grep -oE "[A-Z][A-Z0-9]+-[0-9]+" | awk "!seen[\$0]++" || true)
+
+          echo "[pr-context] Jira keys found: ${JIRA_KEYS:-none}"
+
+          export JIRA_KEYS PIPELINE_ID
           echo "$PR_DATA" | node -e "
             const chunks = [];
             process.stdin.on('data', c => chunks.push(c));
             process.stdin.on('end', () => {
               const d = JSON.parse(chunks.join(''));
+              const rawKeys = (process.env.JIRA_KEYS || '').split('\n').map(k => k.trim()).filter(Boolean);
+              const linkedJira = rawKeys.map(key => ({ key }));
               const ctx = {
                 pipelineId:   process.env.PIPELINE_ID,
                 filesChanged: (d.files || []).map(f => f.path),
-                linkedJira:   [],
+                linkedJira,
                 prNumber:     d.number,
                 title:        d.title,
                 author:       typeof d.author === 'object' ? d.author.login : d.author,
@@ -144,7 +161,7 @@ jobs:
                 headBranch:   d.headRefName,
               };
               require('fs').writeFileSync('oracle-pr-context.json', JSON.stringify(ctx, null, 2));
-              console.log('[pr-context] wrote context for PR #' + d.number + ' — ' + ctx.filesChanged.length + ' file(s) changed');
+              console.log('[pr-context] wrote context for PR #' + d.number + ' — ' + ctx.filesChanged.length + ' file(s) changed, ' + linkedJira.length + ' Jira key(s)');
             });
           "
           echo "PR_CONTEXT_FILE=${{ github.workspace }}/oracle-pr-context.json" >> "$GITHUB_ENV"
