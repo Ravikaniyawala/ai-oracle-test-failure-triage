@@ -28,12 +28,12 @@ function tokenise(input: string): string[] {
  *
  * Decision logic (evaluated in order — first match wins):
  *
- *   HIGH    — the test's source file is directly present in filesChanged,
- *             OR 2 or more keyword tokens from the test name match tokens
- *             found in any changed file path.
+ *   HIGH    — the failing file is directly present in filesChanged,
+ *             OR 2 or more keyword tokens from testName + file path combined
+ *             match tokens found in any changed file path.
  *
- *   MEDIUM  — exactly 1 keyword token from the test name matches a token
- *             in any changed file path.
+ *   MEDIUM  — exactly 1 keyword token from testName + file path matches a
+ *             token in any changed file path.
  *
  *   LOW     — no token overlap found.
  *
@@ -63,14 +63,19 @@ export function getPrRelevance(
   if (normFile !== '' && changedSet.has(normFile)) {
     return {
       level:   'high',
-      reasons: [`direct file match: ${file}`],
+      reasons: [`changed file overlaps failing file path: ${file}`],
     };
   }
 
-  // Keyword overlap between test name and changed file paths.
-  const testTokens = new Set(tokenise(testName));
-  if (testTokens.size === 0) {
-    return { level: 'low', reasons: ['no meaningful tokens in test name'] };
+  // Keyword overlap between (testName + failure file path) and changed file paths.
+  // Including the file path improves monorepo coverage where the test name
+  // alone may not contain enough distinguishing tokens.
+  const testTokens = tokenise(testName);
+  const fileTokens = tokenise(file);
+  const combinedTokens = new Set([...testTokens, ...fileTokens]);
+
+  if (combinedTokens.size === 0) {
+    return { level: 'low', reasons: ['no meaningful tokens in failure name or file path'] };
   }
 
   const matchedTokens: string[] = [];
@@ -79,7 +84,7 @@ export function getPrRelevance(
   for (const changed of prContext.filesChanged) {
     const changedTokens = tokenise(changed);
     for (const ct of changedTokens) {
-      if (testTokens.has(ct) && !matchedTokens.includes(ct)) {
+      if (combinedTokens.has(ct) && !matchedTokens.includes(ct)) {
         matchedTokens.push(ct);
         if (!matchedFiles.includes(changed)) {
           matchedFiles.push(changed);
@@ -92,7 +97,7 @@ export function getPrRelevance(
     return {
       level:   'high',
       reasons: [
-        `${matchedTokens.length} keyword matches: [${matchedTokens.join(', ')}]`,
+        `${matchedTokens.length} keyword matches between failure and PR changes: [${matchedTokens.join(', ')}]`,
         `matched files: [${matchedFiles.slice(0, 3).join(', ')}]`,
       ],
     };
@@ -102,11 +107,11 @@ export function getPrRelevance(
     return {
       level:   'medium',
       reasons: [
-        `1 keyword match: "${matchedTokens[0]}"`,
+        `1 keyword match between failure and PR changes: "${matchedTokens[0]}"`,
         `matched file: ${matchedFiles[0]}`,
       ],
     };
   }
 
-  return { level: 'low', reasons: ['no keyword overlap with changed files'] };
+  return { level: 'low', reasons: ['no overlap between failure and PR changes'] };
 }

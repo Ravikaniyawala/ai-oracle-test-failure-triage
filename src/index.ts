@@ -199,15 +199,24 @@ async function main(): Promise<void> {
     if (PR_CONTEXT_PATH) {
       prContext = loadPrContext(PR_CONTEXT_PATH);
       if (prContext !== null) {
-        savePrContext(prContext);
-        console.log(
-          `[pr-context] loaded PR #${prContext.prNumber ?? 'n/a'} — ` +
-          `${prContext.filesChanged.length} file(s) changed, ` +
-          `${prContext.linkedJira.length} linked Jira issue(s)`,
-        );
-        if (prContext.linkedJira.length > 0) {
-          for (const j of prContext.linkedJira) {
-            console.log(`[pr-context]   linked: ${j.key} (${j.issueType}) — ${j.title}`);
+        // Guard: reject context that belongs to a different pipeline run.
+        // Stale or mismatched context would produce incorrect explainability output.
+        if (prContext.pipelineId !== PIPELINE_ID) {
+          console.warn(
+            `[pr-context] pipeline mismatch: expected ${PIPELINE_ID}, got ${prContext.pipelineId}. Skipping PR enrichment.`,
+          );
+          prContext = null;
+        } else {
+          savePrContext(prContext);
+          console.log(
+            `[pr-context] loaded PR #${prContext.prNumber ?? 'n/a'} — ` +
+            `${prContext.filesChanged.length} file(s) changed, ` +
+            `${prContext.linkedJira.length} linked Jira issue(s)`,
+          );
+          if (prContext.linkedJira.length > 0) {
+            for (const j of prContext.linkedJira) {
+              console.log(`[pr-context]   linked: ${j.key} (${j.issueType}) — ${j.title}`);
+            }
           }
         }
       }
