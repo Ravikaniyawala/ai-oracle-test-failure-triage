@@ -164,8 +164,8 @@ export interface FeedbackEntry {
  */
 export interface LinkedJira {
   key:        string;
-  title:      string;
-  issueType:  string;
+  title?:     string;
+  issueType?: string;
   team?:      string;
 }
 
