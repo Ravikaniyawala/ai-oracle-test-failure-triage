@@ -14,8 +14,9 @@ anyone looks at the logs.
 3. Oracle reads the test report and classifies every failure into one of four categories using Claude
 4. A policy engine decides which actions to take — Jira defects for regressions and new bugs (confidence > 0.7), Slack summary for every run
 5. Actions are fingerprinted and deduplicated — re-running the same pipeline never creates duplicate Jira tickets or Slack posts
-6. Historical pattern stats are logged per failure — showing how many times an action was taken, how many Jiras were duplicates, and whether retries have worked before
-7. Results and action audit trail are persisted to SQLite so patterns are learned over successive runs
+6. Historical pattern stats are looked up per failure and used to suppress duplicate Jira tickets and adjust retry verdicts
+7. All decisions are explained in a human-readable `oracle-decision-summary.md` artifact
+8. Results and action audit trail are persisted to SQLite so patterns are learned over successive runs
 
 ### Operating modes
 
@@ -168,7 +169,7 @@ The `verdict` output (`CLEAR` or `BLOCKED`) can be used by downstream jobs. The 
 
 The top-level `verdict` and category counts are unchanged from previous versions. The `failures[]` array is additive.
 
-The `verdict` output (`CLEAR` or `BLOCKED`) can be used by downstream jobs:
+The `verdict` output can be used by downstream jobs:
 
 ```yaml
   deploy:
@@ -285,13 +286,15 @@ The policy engine applies confidence thresholds to `retry_test` proposals:
 - **0.5–0.79** → held, written to `oracle-held-actions.json` for operator review
 - **< 0.5** → rejected
 
+History overrides these thresholds when the pattern has enough signal (see [History-influenced decisions](#history-influenced-decisions) below).
+
 All proposals are recorded in `agent_proposals` and linked to the `actions` ledger regardless of verdict.
 
 ---
 
-## Historical pattern stats (explainability)
+## Historical pattern stats
 
-On every normal CI triage run, Oracle looks up the history for each failure pattern (`testName + errorHash`) and logs it before any decisions are made. This gives operators full context — no ML, no scoring, just counts from existing data.
+On every normal CI triage run, Oracle looks up the history for each failure pattern (`testName + errorHash`) and logs it before any decisions are made:
 
 ```
 [history] checkout applies voucher (a3f9c1d2)
@@ -306,7 +309,85 @@ On every normal CI triage run, Oracle looks up the history for each failure patt
 | `retry_passed` | Does retrying this test usually work? |
 | `retry_failed` | Or does it stay broken after a retry? |
 
-These stats are **read-only** — they are surfaced for explainability and never influence decisions. They are also written per failure into `oracle-verdict.json` under a `failures[]` array alongside the existing top-level verdict and category counts.
+Stats are also written per failure into `oracle-verdict.json` under `failures[].pattern_stats`.
+
+---
+
+## History-influenced decisions
+
+Oracle uses historical pattern stats to override a small, explicit set of decisions. Rules are deterministic — no scoring or ML.
+
+### `create_jira` suppression
+
+If a failure pattern has accumulated duplicate signals, Oracle rejects the `create_jira` action to avoid filing yet another ticket that will be closed immediately:
+
+| Condition | Verdict | Reason |
+|---|---|---|
+| A Jira was already successfully created for this exact fingerprint | `rejected` | `history:jira_already_created` |
+| `jira_duplicates ≥ 2` AND `jira_duplicates ≥ jira_created / 2` | `rejected` | `history:duplicate_pattern` |
+
+### `retry_test` override (agent proposals only)
+
+When an agent proposes a `retry_test` action, history takes priority over the confidence threshold:
+
+| Condition | Verdict | Reason |
+|---|---|---|
+| `retry_passed ≥ 2` AND `retry_passed > retry_failed` | `approved` | `history:retry_success_pattern` |
+| `retry_failed ≥ 2` AND `retry_failed ≥ retry_passed` | `rejected` | `history:retry_failure_pattern` |
+
+All other proposals fall back to the normal confidence threshold rules.
+
+---
+
+## Decision explainability
+
+After every triage run, Oracle writes `oracle-decision-summary.md` — a human-readable artifact grouping all decisions by verdict and highlighting history-influenced ones.
+
+### Sections
+
+- **Approved** — actions that were executed
+- **Rejected** — actions that were blocked and why
+- **Held** — actions awaiting operator review
+- **History-influenced** — any decision where past data changed the default outcome
+
+### Example output
+
+```markdown
+# Oracle Decision Summary — Pipeline 12345
+
+> 3 failure(s) triaged · 2026-04-06T08:00:00.000Z
+
+## Approved (2)
+- `notify_slack` — policy:auto-approved
+- `create_jira` for "checkout applies voucher" — policy:auto-approved
+
+## Rejected (1)
+- `create_jira` for "login redirect after auth" — history:duplicate_pattern (jira_created=3, jira_duplicates=2)
+
+## Held (0)
+_none_
+
+## History-influenced (1)
+- `create_jira` for "login redirect after auth" — history:duplicate_pattern (jira_created=3, jira_duplicates=2)
+```
+
+### CI log output
+
+Notable decisions (rejected, held, or history-influenced) are also printed inline to CI logs:
+
+```
+[decision] create_jira rejected — history:duplicate_pattern (jira_created=3, jira_duplicates=2) — login redirect after auth
+```
+
+Auto-approved policy actions are intentionally omitted from CI logs to keep output readable.
+
+### Slack highlights
+
+History-influenced decisions are surfaced in the Slack summary as a compact *Decision highlights* block, so the team can see at a glance when Oracle suppressed an action based on past data.
+
+### Zero-failure runs
+
+When no failures are found, Oracle still writes a minimal `oracle-decision-summary.md` with a `✅ Verdict: CLEAR` heading. On GitHub Actions, this is also appended to the workflow's Step Summary.
 
 ---
 
@@ -335,11 +416,13 @@ src/
   triage.ts                 — AI classification via Claude API
   prompt-builder.ts         — prompt assembly
   policy-engine.ts          — action proposal, fingerprinting, and decision logic
+  decision-explainer.ts     — explainDecision() formatter and isNotable() filter
   state-store.ts            — SQLite persistence (runs, failures, actions audit trail)
   feedback-processor.ts     — feedback ingestion from JSON files
   agent-proposal-loader.ts  — agent proposal validation and loading
   held-actions-writer.ts    — writes oracle-held-actions.json for operator review
   instinct-loader.ts        — loads .instincts/ into prompt context
+  summary-writer.ts         — markdown summary for PR comments
   jira-writer.ts            — Jira REST API integration (single-defect interface)
   slack-notifier.ts         — Slack webhook integration
   learn.ts                  — instinct generation script
@@ -360,6 +443,16 @@ tests/
 | `feedback` | Operator feedback entries — Jira outcomes, classification corrections, retry results |
 | `agent_proposals` | Intake record for every agent proposal — status lifecycle (`received` → `approved`/`held`/`rejected` → `executed`), linked to `actions` via fingerprint |
 | `instinct_feedback` | Correctness feedback for learned instinct patterns |
+
+---
+
+## Artifacts produced per run
+
+| Artifact | When written | Contents |
+|---|---|---|
+| `oracle-verdict.json` | Every run | Verdict (`CLEAR`/`BLOCKED`), category counts, per-failure pattern stats |
+| `oracle-decision-summary.md` | Every run | All decisions grouped by verdict; history-influenced decisions highlighted |
+| `oracle-held-actions.json` | When held actions exist | Agent proposals awaiting operator review |
 
 ---
 
