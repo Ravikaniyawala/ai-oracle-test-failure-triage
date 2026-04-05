@@ -128,28 +128,36 @@ jobs:
             exit 0
           fi
 
-          # Extract Jira keys from: title, body, branch name, and commit messages.
-          # jq collects all text into one newline-separated stream; grep pulls keys;
-          # awk deduplicates while preserving first-seen order.
-          JIRA_KEYS=$(echo "$PR_DATA" | jq -r '
-            [ .title // "",
-              .body // "",
-              .headRefName // "",
-              (.commits // [] | .[].messageHeadline // ""),
-              (.commits // [] | .[].messageBody // "")
-            ] | join("\n")
-          ' | grep -oE "[A-Z][A-Z0-9]+-[0-9]+" | awk "!seen[\$0]++" || true)
+          # Collect commit messages: try git log over the PR range first (requires
+          # the calling repo to be checked out), fall back to API-provided commits.
+          COMMIT_MSGS=$(git log origin/${{ github.base_ref }}..HEAD --pretty=format:%s 2>/dev/null || true)
+          if [ -z "$COMMIT_MSGS" ]; then
+            COMMIT_MSGS=$(echo "$PR_DATA" | jq -r '
+              (.commits // []) | map((.messageHeadline // "") + "\n" + (.messageBody // "")) | join("\n")
+            ' 2>/dev/null || true)
+          fi
 
+          # Combine title, body, branch name, and commit messages into one text blob.
+          # grep extracts keys matching [A-Z][A-Z0-9]+-[0-9]+; sort -u deduplicates.
+          JIRA_KEYS=$(
+            {
+              echo "$PR_DATA" | jq -r '.title // "", .body // "", .headRefName // ""'
+              echo "$COMMIT_MSGS"
+            } | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' | sort -u || true
+          )
           echo "[pr-context] Jira keys found: ${JIRA_KEYS:-none}"
 
-          export JIRA_KEYS PIPELINE_ID
+          # Convert newline-separated keys into [{"key":"ABC-123"}, ...] JSON.
+          LINKED_JIRA=$(printf '%s\n' "$JIRA_KEYS" \
+            | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({key: .})' || echo '[]')
+
+          export LINKED_JIRA PIPELINE_ID
           echo "$PR_DATA" | node -e "
             const chunks = [];
             process.stdin.on('data', c => chunks.push(c));
             process.stdin.on('end', () => {
               const d = JSON.parse(chunks.join(''));
-              const rawKeys = (process.env.JIRA_KEYS || '').split('\n').map(k => k.trim()).filter(Boolean);
-              const linkedJira = rawKeys.map(key => ({ key }));
+              const linkedJira = JSON.parse(process.env.LINKED_JIRA || '[]');
               const ctx = {
                 pipelineId:   process.env.PIPELINE_ID,
                 filesChanged: (d.files || []).map(f => f.path),
