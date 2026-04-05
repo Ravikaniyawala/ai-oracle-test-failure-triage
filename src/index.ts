@@ -13,6 +13,7 @@ import {
   saveAgentProposal,
   updateAgentProposalStatus,
   getPatternStats,
+  savePrContext,
 } from './state-store.js';
 import { createJiraDefect } from './jira-writer.js';
 import { postSlackSummary } from './slack-notifier.js';
@@ -24,6 +25,8 @@ import { ingestFeedback } from './feedback-processor.js';
 import { loadAgentProposals } from './agent-proposal-loader.js';
 import { writeHeldActions } from './held-actions-writer.js';
 import { explainDecision, isNotable } from './decision-explainer.js';
+import { loadPrContext } from './pr-context-loader.js';
+import { getPrRelevance } from './pr-relevance.js';
 import {
   TriageCategory,
   type ActionProposal,
@@ -33,6 +36,8 @@ import {
   type DecisionEntry,
   type JiraCreated,
   type PatternStats,
+  type PrContext,
+  type PrRelevance,
   type RunSummary,
   type TriageResult,
 } from './types.js';
@@ -40,6 +45,7 @@ import {
 const REPORT_PATH          = process.env['PLAYWRIGHT_REPORT_PATH']    ?? './playwright-report.json';
 const FEEDBACK_PATH        = process.env['ORACLE_FEEDBACK_PATH'];
 const AGENT_PROPOSALS_PATH = process.env['ORACLE_AGENT_PROPOSALS_PATH'];
+const PR_CONTEXT_PATH      = process.env['ORACLE_PR_CONTEXT_PATH'];
 const PIPELINE_ID          =
   process.env['CI_PIPELINE_ID'] ??
   process.env['GITHUB_RUN_ID'] ??
@@ -188,6 +194,25 @@ async function main(): Promise<void> {
     const parsed = parseReport(REPORT_PATH);
     console.log(`[oracle] detected format: ${parsed.detectedFormat}`);
 
+    // Load optional PR context for enrichment (read-only — never influences decisions).
+    let prContext: PrContext | null = null;
+    if (PR_CONTEXT_PATH) {
+      prContext = loadPrContext(PR_CONTEXT_PATH);
+      if (prContext !== null) {
+        savePrContext(prContext);
+        console.log(
+          `[pr-context] loaded PR #${prContext.prNumber ?? 'n/a'} — ` +
+          `${prContext.filesChanged.length} file(s) changed, ` +
+          `${prContext.linkedJira.length} linked Jira issue(s)`,
+        );
+        if (prContext.linkedJira.length > 0) {
+          for (const j of prContext.linkedJira) {
+            console.log(`[pr-context]   linked: ${j.key} (${j.issueType}) — ${j.title}`);
+          }
+        }
+      }
+    }
+
     if (parsed.failures.length === 0) {
       console.log('[oracle] no failures found — verdict: CLEAR');
 
@@ -242,6 +267,22 @@ async function main(): Promise<void> {
       const stats = getPatternStats(result.testName, result.errorHash);
       patternStatsMap.set(`${result.testName}:${result.errorHash}`, stats);
       logPatternStats(result.testName, result.errorHash, stats);
+    }
+
+    // 2.6. Compute PR relevance per failure (explainability only — no decision impact).
+    const relevanceMap = new Map<string, PrRelevance>();
+    if (prContext !== null) {
+      for (const result of results) {
+        const key       = `${result.testName}:${result.errorHash}`;
+        const relevance = getPrRelevance(result.testName, result.file, prContext);
+        relevanceMap.set(key, relevance);
+        if (relevance.level !== 'low' && relevance.level !== 'unknown') {
+          console.log(
+            `[pr-relevance] ${relevance.level.toUpperCase()} — ${result.testName}` +
+            (relevance.reasons.length > 0 ? ` (${relevance.reasons[0]})` : ''),
+          );
+        }
+      }
     }
 
     // 3. Propose + decide per-failure actions
@@ -355,7 +396,7 @@ async function main(): Promise<void> {
     );
 
     // 7. Decision summary artifact
-    writeDecisionSummary(decisionLog, PIPELINE_ID, parsed.totalFailures);
+    writeDecisionSummary(decisionLog, PIPELINE_ID, parsed.totalFailures, prContext, relevanceMap, results);
 
     console.log('[oracle] triage complete', summary);
   } catch (err) {
@@ -454,20 +495,23 @@ function logPatternStats(testName: string, errorHash: string, stats: PatternStat
  * Write oracle-decision-summary.md — a human-readable artifact grouping all
  * decisions by verdict and highlighting history-influenced ones.
  *
- * Sections: Approved · Rejected · Held · History-influenced
+ * Sections: Approved · Rejected · Held · History-influenced · PR/Change Context
  * Skipped when decisionLog is empty.
  */
 function writeDecisionSummary(
   decisionLog:   DecisionEntry[],
   pipelineId:    string,
   totalFailures: number,
+  prContext?:    PrContext | null,
+  relevanceMap?: Map<string, PrRelevance>,
+  results?:      TriageResult[],
 ): void {
   if (decisionLog.length === 0) return;
 
-  const approved    = decisionLog.filter(d => d.verdict === 'approved');
-  const rejected    = decisionLog.filter(d => d.verdict === 'rejected');
-  const held        = decisionLog.filter(d => d.verdict === 'held');
-  const historical  = decisionLog.filter(d => d.reason.startsWith('history:'));
+  const approved   = decisionLog.filter(d => d.verdict === 'approved');
+  const rejected   = decisionLog.filter(d => d.verdict === 'rejected');
+  const held       = decisionLog.filter(d => d.verdict === 'held');
+  const historical = decisionLog.filter(d => d.reason.startsWith('history:'));
 
   const entryLine = (d: DecisionEntry): string =>
     `- \`${d.actionType}\`${d.testName ? ` for "${d.testName}"` : ''} — ${d.explanation.replace(/^[^ ]+ [^ ]+ — /, '')}`;
@@ -492,6 +536,55 @@ function writeDecisionSummary(
     section('History-influenced', historical),
     '',
   ];
+
+  // PR / Change Context section — only when PR context was loaded.
+  if (prContext !== null && prContext !== undefined) {
+    lines.push('## PR / Change Context');
+    lines.push('');
+
+    const meta: string[] = [];
+    if (prContext.prNumber !== undefined) meta.push(`PR #${prContext.prNumber}`);
+    if (prContext.title    !== undefined) meta.push(`"${prContext.title}"`);
+    if (prContext.author   !== undefined) meta.push(`by ${prContext.author}`);
+    if (meta.length > 0) lines.push(`**${meta.join(' · ')}**`);
+
+    lines.push('');
+    lines.push(`**${prContext.filesChanged.length} file(s) changed** in this PR.`);
+
+    if (prContext.linkedJira.length > 0) {
+      lines.push('');
+      lines.push('**Linked Jira issues:**');
+      for (const j of prContext.linkedJira) {
+        const team = j.team !== undefined ? ` · ${j.team}` : '';
+        lines.push(`- \`${j.key}\` (${j.issueType}${team}) — ${j.title}`);
+      }
+    }
+
+    // Per-failure relevance breakdown.
+    if (relevanceMap !== undefined && results !== undefined && results.length > 0) {
+      const highOrMedium = results.filter(r => {
+        const rel = relevanceMap.get(`${r.testName}:${r.errorHash}`);
+        return rel?.level === 'high' || rel?.level === 'medium';
+      });
+
+      lines.push('');
+      lines.push('**Failure relevance to this PR:**');
+
+      if (highOrMedium.length === 0) {
+        lines.push('_No failures have high or medium relevance to the changed files._');
+      } else {
+        for (const r of highOrMedium) {
+          const rel = relevanceMap.get(`${r.testName}:${r.errorHash}`) as PrRelevance;
+          const reason = rel.reasons.length > 0 ? ` — ${rel.reasons[0]}` : '';
+          lines.push(`- **${rel.level.toUpperCase()}** \`${r.testName}\`${reason}`);
+        }
+      }
+    }
+
+    lines.push('');
+    lines.push('> ℹ️ PR context is informational only — it does not influence any Oracle decisions.');
+    lines.push('');
+  }
 
   writeFileSync('oracle-decision-summary.md', lines.join('\n'));
   console.log(`[oracle] decision summary written to oracle-decision-summary.md (${decisionLog.length} decision(s))`);
