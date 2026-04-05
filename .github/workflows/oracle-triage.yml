@@ -112,6 +112,43 @@ jobs:
           mkdir -p .oracle-cache
           cp -r .oracle-cache/.instincts oracle/.instincts 2>/dev/null || mkdir -p oracle/.instincts
 
+      - name: Generate PR context
+        env:
+          GH_TOKEN:    ${{ github.token }}
+          PIPELINE_ID: ${{ inputs.pipeline-id }}
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+
+          PR_DATA=$(gh pr view "$BRANCH" --repo "$REPO" \
+            --json number,title,author,baseRefName,headRefName,files 2>/dev/null || echo "")
+
+          if [ -z "$PR_DATA" ]; then
+            echo "[pr-context] no open PR found for branch $BRANCH — skipping enrichment"
+            exit 0
+          fi
+
+          echo "$PR_DATA" | node -e "
+            const chunks = [];
+            process.stdin.on('data', c => chunks.push(c));
+            process.stdin.on('end', () => {
+              const d = JSON.parse(chunks.join(''));
+              const ctx = {
+                pipelineId:   process.env.PIPELINE_ID,
+                filesChanged: (d.files || []).map(f => f.path),
+                linkedJira:   [],
+                prNumber:     d.number,
+                title:        d.title,
+                author:       typeof d.author === 'object' ? d.author.login : d.author,
+                baseBranch:   d.baseRefName,
+                headBranch:   d.headRefName,
+              };
+              require('fs').writeFileSync('oracle-pr-context.json', JSON.stringify(ctx, null, 2));
+              console.log('[pr-context] wrote context for PR #' + d.number + ' — ' + ctx.filesChanged.length + ' file(s) changed');
+            });
+          "
+          echo "PR_CONTEXT_FILE=${{ github.workspace }}/oracle-pr-context.json" >> "$GITHUB_ENV"
+
       - name: Run Oracle triage
         env:
           ANTHROPIC_API_KEY:      ${{ secrets.anthropic-api-key }}
@@ -122,6 +159,7 @@ jobs:
           PLAYWRIGHT_REPORT_PATH: ${{ github.workspace }}/downloaded-results/
           REPORT_FORMAT:          ${{ inputs.report-format }}
           ORACLE_STATE_DB_PATH:   ${{ github.workspace }}/.oracle-cache/oracle-state.db
+          ORACLE_PR_CONTEXT_PATH: ${{ env.PR_CONTEXT_FILE }}
           CI_PIPELINE_ID:         ${{ inputs.pipeline-id }}
           GITHUB_TOKEN:           ${{ github.token }}
           GITHUB_REF_NAME:        ${{ github.ref_name }}
