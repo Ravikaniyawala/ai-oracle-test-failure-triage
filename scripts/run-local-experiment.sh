@@ -28,7 +28,11 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORACLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 FIXTURE_DIR="$ORACLE_DIR/tests/fixtures/experiment"
-DB_PATH="/tmp/oracle-local-experiment.db"
+# PID suffix prevents DB collisions when multiple experiment runs execute concurrently.
+# Callers may override via ORACLE_STATE_DB_PATH to reuse an existing DB.
+DB_PATH="${ORACLE_STATE_DB_PATH:-/tmp/oracle-local-experiment-$$.db}"
+# Verdict output path — kept per-invocation to avoid cross-run clobber.
+VERDICT_PATH="${ORACLE_VERDICT_PATH:-$ORACLE_DIR/oracle-verdict-$$.json}"
 
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "❌  ANTHROPIC_API_KEY is not set"
@@ -57,13 +61,14 @@ for entry in "${FIXTURES[@]}"; do
   # Run oracle — suppress noisy logs, keep errors visible
   PLAYWRIGHT_REPORT_PATH="$FIXTURE_PATH" \
   ORACLE_STATE_DB_PATH="$DB_PATH" \
+  ORACLE_VERDICT_PATH="$VERDICT_PATH" \
   REPORT_FORMAT="PLAYWRIGHT_JSON" \
   DRY_RUN="true" \
   CI_PIPELINE_ID="local-experiment-$(date +%s)" \
     npm run --silent triage 2>&1 | grep -v '^\[oracle\]\|^\[history\]\|DeprecationWarning\|Use `node\|punycode' >&2 || true
 
   # Parse verdict file
-  VERDICT_FILE="$ORACLE_DIR/oracle-verdict.json"
+  VERDICT_FILE="$VERDICT_PATH"
   if [ ! -f "$VERDICT_FILE" ]; then
     printf "%-30s %-22s %-22s %-12s %s\n" "$FILE" "$HUMAN_LABEL" "ERROR (no verdict)" "—" "❌"
     continue
@@ -95,4 +100,5 @@ for entry in "${FIXTURES[@]}"; do
 done
 
 printf "\nDB written to: %s\n" "$DB_PATH"
+printf "Verdict file:  %s\n" "$VERDICT_PATH"
 printf "To inspect: sqlite3 %s \"SELECT test_name, category, confidence FROM failure_verdicts ORDER BY created_at DESC;\"\n\n" "$DB_PATH"

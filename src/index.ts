@@ -42,14 +42,19 @@ import {
   type TriageResult,
 } from './types.js';
 
-const REPORT_PATH          = process.env['PLAYWRIGHT_REPORT_PATH']    ?? './playwright-report.json';
-const FEEDBACK_PATH        = process.env['ORACLE_FEEDBACK_PATH'];
-const AGENT_PROPOSALS_PATH = process.env['ORACLE_AGENT_PROPOSALS_PATH'];
-const PR_CONTEXT_PATH      = process.env['ORACLE_PR_CONTEXT_PATH'];
-const PIPELINE_ID          =
+const REPORT_PATH            = process.env['PLAYWRIGHT_REPORT_PATH']       ?? './playwright-report.json';
+const FEEDBACK_PATH          = process.env['ORACLE_FEEDBACK_PATH'];
+const AGENT_PROPOSALS_PATH   = process.env['ORACLE_AGENT_PROPOSALS_PATH'];
+const PR_CONTEXT_PATH        = process.env['ORACLE_PR_CONTEXT_PATH'];
+const PIPELINE_ID            =
   process.env['CI_PIPELINE_ID'] ??
   process.env['GITHUB_RUN_ID'] ??
   `local-${Date.now()}`;
+
+// Output file paths — configurable so parallel invocations can write to separate locations.
+// Defaults preserve the existing filenames and cwd-relative behavior.
+const VERDICT_PATH          = process.env['ORACLE_VERDICT_PATH']          ?? 'oracle-verdict.json';
+const DECISION_SUMMARY_PATH = process.env['ORACLE_DECISION_SUMMARY_PATH'] ?? 'oracle-decision-summary.md';
 
 // Sentinel run_id used for agent-proposal-mode actions (no CI run exists).
 // SQLite FK constraints are not enforced without PRAGMA foreign_keys = ON.
@@ -226,12 +231,12 @@ async function main(): Promise<void> {
       console.log('[oracle] no failures found — verdict: CLEAR');
 
       // Write verdict artifact (unchanged structure).
-      writeFileSync('oracle-verdict.json', JSON.stringify({
+      writeFileSync(VERDICT_PATH, JSON.stringify({
         verdict: 'CLEAR', FLAKY: 0, REGRESSION: 0, NEW_BUG: 0, ENV_ISSUE: 0,
       }, null, 2));
 
       // Write minimal decision summary artifact.
-      writeFileSync('oracle-decision-summary.md', [
+      writeFileSync(DECISION_SUMMARY_PATH, [
         '# Oracle Decision Summary',
         '',
         '✅ Verdict: CLEAR',
@@ -400,7 +405,7 @@ async function main(): Promise<void> {
     }));
 
     writeFileSync(
-      'oracle-verdict.json',
+      VERDICT_PATH,
       JSON.stringify({ verdict, ...summary, failures: failureSummaries }, null, 2),
     );
 
@@ -599,8 +604,8 @@ function writeDecisionSummary(
     lines.push('');
   }
 
-  writeFileSync('oracle-decision-summary.md', lines.join('\n'));
-  console.log(`[oracle] decision summary written to oracle-decision-summary.md (${decisionLog.length} decision(s))`);
+  writeFileSync(DECISION_SUMMARY_PATH, lines.join('\n'));
+  console.log(`[oracle] decision summary written to ${DECISION_SUMMARY_PATH} (${decisionLog.length} decision(s))`);
 }
 
 // ── Summary helper ────────────────────────────────────────────────────────────
