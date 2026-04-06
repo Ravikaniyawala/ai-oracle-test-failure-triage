@@ -181,6 +181,7 @@ jobs:
           ATLASSIAN_BASE_URL:     ${{ secrets.atlassian-base-url }}
           ATLASSIAN_PROJECT_KEY:  ${{ secrets.atlassian-project-key }}
           SLACK_WEBHOOK_URL:      ${{ secrets.slack-webhook-url }}
+          DRY_RUN:                'true'
           PLAYWRIGHT_REPORT_PATH: ${{ github.workspace }}/downloaded-results/
           REPORT_FORMAT:          ${{ inputs.report-format }}
           ORACLE_STATE_DB_PATH:   ${{ github.workspace }}/.oracle-cache/oracle-state.db
