@@ -1,7 +1,10 @@
 node_modules/
 dist/
 oracle-state.db
+*.db
 .oracle-cache/
 .env
+oracle-verdict.json
+oracle-decision-summary.md
 tests/fixtures/real-report.json
 tests/fixtures/real-report.xml

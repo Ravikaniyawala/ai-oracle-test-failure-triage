@@ -1,0 +1,30 @@
+{
+  "config": { "rootDir": "/app" },
+  "suites": [
+    {
+      "title": "Order History",
+      "specs": [
+        {
+          "title": "renders past orders list",
+          "file": "tests/orders.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 0,
+                  "duration": 2100,
+                  "errors": [
+                    {
+                      "message": "expect(received).toHaveCount(expected)\n\nExpected: 5\nReceived: 0\n\n  33 |   await expect(page.locator('.order-row')).toHaveCount(5);\n     |                                            ^\n  34 | });\n\nCall log:\n  - navigating to https://app.example.com/orders\n  - locator resolved to 0 elements"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "config": { "rootDir": "/app" },
+  "suites": [
+    {
+      "title": "Reporting",
+      "specs": [
+        {
+          "title": "generates monthly summary",
+          "file": "tests/reports.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 0,
+                  "duration": 5200,
+                  "errors": [
+                    {
+                      "message": "expect(received).toBeVisible()\n\nExpected: visible\nReceived: <element(s) not found>\n\n  29 |   await page.click('[data-testid=\"nav-reports\"]');\n  30 |   await expect(page.locator('[data-testid=\"generate-summary-btn\"]')).toBeVisible();\n     |                                                                       ^\n  31 | });\n\nCall log:\n  - navigating to https://app.example.com/reports\n  - waiting for locator('[data-testid=\"generate-summary-btn\"]')\n  - element not found after 5000ms\n  - page title: \"Reports — Coming Soon\"\n  - page URL: https://app.example.com/reports?feature=disabled"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

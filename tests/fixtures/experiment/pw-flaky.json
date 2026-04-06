@@ -1,0 +1,30 @@
+{
+  "config": { "rootDir": "/app" },
+  "suites": [
+    {
+      "title": "Checkout",
+      "specs": [
+        {
+          "title": "completes purchase flow",
+          "file": "tests/checkout.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "timedOut",
+                  "retry": 2,
+                  "duration": 30000,
+                  "errors": [
+                    {
+                      "message": "Timeout 30000ms exceeded.\n\nwaiting for locator('#place-order-btn') to be visible\n\n=========================== logs ===========================\nwaiting for locator('#place-order-btn')\n  locator resolved to <button id=\"place-order-btn\">Place Order</button>\n  attempting click action\n    waiting for element to be visible, enabled and stable\n    element is not stable - waiting...\n    element is not stable - waiting...\n    element is not stable - waiting...\n============================================================\n\nat checkout.spec.ts:42"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
