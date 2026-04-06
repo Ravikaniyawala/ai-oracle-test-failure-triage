@@ -1,7 +1,12 @@
 node_modules/
 dist/
+# Runtime state DBs — do NOT broaden to *.db; fixture/seed DBs may be intentionally committed
 oracle-state.db
+/tmp/oracle-*.db
+oracle-local-experiment.db
 .oracle-cache/
 .env
+oracle-verdict.json
+oracle-decision-summary.md
 tests/fixtures/real-report.json
 tests/fixtures/real-report.xml

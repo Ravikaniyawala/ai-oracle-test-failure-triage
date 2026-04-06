@@ -1,0 +1,50 @@
+{
+  "config": { "rootDir": "/app" },
+  "suites": [
+    {
+      "title": "User Profile",
+      "specs": [
+        {
+          "title": "loads account settings",
+          "file": "tests/profile.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 0,
+                  "duration": 3100,
+                  "errors": [
+                    {
+                      "message": "page.goto: net::ERR_CONNECTION_REFUSED at https://app.example.com/account\n\nCall log:\n  - navigating to \"https://app.example.com/account\", waiting until \"load\"\n\n  12 |   await page.goto('https://app.example.com/account');\n     |               ^\n  13 | });\n\nCaused by: connect ECONNREFUSED 10.0.1.42:443"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "updates notification preferences",
+          "file": "tests/profile.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 0,
+                  "duration": 2800,
+                  "errors": [
+                    {
+                      "message": "page.goto: net::ERR_CERT_AUTHORITY_INVALID at https://app.example.com/account/notifications\n\nCall log:\n  - navigating to \"https://app.example.com/account/notifications\", waiting until \"load\"\n\n  18 |   await page.goto('https://app.example.com/account/notifications');\n     |               ^\n\nCaused by: SSL certificate error: CERT_HAS_EXPIRED (valid until 2024-01-15)"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "config": { "rootDir": "/app" },
+  "suites": [
+    {
+      "title": "Product Detail",
+      "specs": [
+        {
+          "title": "displays item price correctly",
+          "file": "tests/product.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 0,
+                  "duration": 1850,
+                  "errors": [
+                    {
+                      "message": "expect(received).toHaveText(expected)\n\nExpected string: \"$4.99\"\nReceived string: \"$5.99\"\n\n  38 |   await expect(page.locator('.product-price')).toHaveText('$4.99');\n     |                                                ^\n  39 | });\n\nCall log:\n  - navigating to https://shop.example.com/products/42\n  - locator resolved to <span class=\"product-price\">$5.99</span>"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "shows correct stock status",
+          "file": "tests/product.spec.ts",
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "retry": 0,
+                  "duration": 1320,
+                  "errors": [
+                    {
+                      "message": "expect(received).toHaveText(expected)\n\nExpected string: \"In Stock\"\nReceived string: \"Out of Stock\"\n\n  54 |   await expect(page.locator('.stock-status')).toHaveText('In Stock');\n     |                                               ^\n  55 | });\n\nCall log:\n  - navigating to https://shop.example.com/products/42\n  - locator resolved to <span class=\"stock-status\">Out of Stock</span>"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
