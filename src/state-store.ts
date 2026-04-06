@@ -16,6 +16,10 @@ let db: Database.Database;
 
 export function initDb(): void {
   db = new Database(DB_PATH);
+  // WAL mode allows concurrent readers alongside a writer without SQLITE_BUSY errors.
+  // busy_timeout gives write-contention retries up to 5 s before hard-failing.
+  db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 5000');
   db.exec(`
     CREATE TABLE IF NOT EXISTS runs (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,

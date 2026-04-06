@@ -1,7 +1,7 @@
 import { writeFileSync } from 'fs';
 import { type AgentDecision } from './types.js';
 
-const HELD_ARTIFACT_PATH = 'oracle-held-actions.json';
+const HELD_ARTIFACT_PATH = process.env['ORACLE_HELD_ACTIONS_PATH'] ?? 'oracle-held-actions.json';
 
 /**
  * Write held agent decisions to oracle-held-actions.json.
