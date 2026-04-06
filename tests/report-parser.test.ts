@@ -2,9 +2,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseReport } from '../src/report-parser.js';
 import { ReportFormat } from '../src/types.js';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-const fixture = (name: string) => resolve(import.meta.dirname, 'fixtures', name);
+const __dirname = import.meta.dirname ?? dirname(fileURLToPath(import.meta.url));
+const fixture = (name: string) => resolve(__dirname, 'fixtures', name);
 
 // ---------------------------------------------------------------------------
 // Playwright JSON
