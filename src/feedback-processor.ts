@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { saveFeedback } from './state-store.js';
 import { type FeedbackEntry, type FeedbackType } from './types.js';
+import { oracleLog } from './logger.js';
 
 // Raw JSON shape (snake_case, as documented in the spec)
 interface RawFeedback {
@@ -58,7 +59,15 @@ export function ingestFeedback(filePath: string): number {
   let saved = 0;
   for (const item of items) {
     if (!isValidFeedback(item)) {
-      console.warn('[oracle] feedback entry invalid or unknown type, skipping:', JSON.stringify(item));
+      // Log the rejection without echoing the raw payload (may contain sensitive test names or PII).
+      const feedbackType =
+        typeof item === 'object' && item !== null && 'feedback_type' in item
+          ? String((item as Record<string, unknown>)['feedback_type'])
+          : '(missing)';
+      oracleLog.warn('feedback-processor', 'feedback.rejected', {
+        reason:        'invalid_or_unknown_type',
+        feedback_type: feedbackType,
+      });
       continue;
     }
     saveFeedback(toEntry(item));

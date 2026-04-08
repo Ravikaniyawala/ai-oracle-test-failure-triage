@@ -49,13 +49,29 @@ const ConfidenceSchema = z
  * All fields are required — the prompt explicitly asks the LLM to return all
  * of them on every result. If the LLM omits a field the batch is rejected so
  * the policy engine only ever receives structurally complete objects.
+ *
+ * ## Why reasoning and suggested_fix are required (not optional)
+ *
+ * Both fields are required at the schema level for two reasons:
+ *
+ *   1. The system prompt unconditionally instructs the LLM to populate them.
+ *      Making them optional would silently accept responses where the LLM
+ *      ignored the prompt — masking a prompt-regression rather than surfacing it.
+ *
+ *   2. Downstream consumers (decision-explainer, oracle-decision-summary.md,
+ *      Slack notifier) render both fields on every result. Optional fields would
+ *      require null-guards at every call site with no concrete benefit.
+ *
+ * An empty string ("") is valid and acceptable — the LLM may legitimately have
+ * nothing to add for a trivially obvious failure. What is not acceptable is the
+ * field being absent entirely, which would indicate a structural prompt failure.
  */
 export const TriageResultItemSchema = z.object({
   testName:      z.string().min(1, 'testName must be a non-empty string'),
   category:      z.nativeEnum(TriageCategory),
   confidence:    ConfidenceSchema,
-  reasoning:     z.string(),
-  suggested_fix: z.string(),
+  reasoning:     z.string(),      // required; empty string acceptable — see docstring above
+  suggested_fix: z.string(),      // required; empty string acceptable — see docstring above
 });
 
 /** TypeScript type inferred directly from the schema. */

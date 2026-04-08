@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { buildSystemPrompt, buildUserPrompt } from './prompt-builder.js';
 import { validateTriageApiResponse, TriageValidationError } from './triage-validator.js';
+import { oracleLog } from './logger.js';
 import {
   TriageCategory,
   ReportFormat,
@@ -54,11 +55,15 @@ async function triageBatch(
     if (err instanceof TriageValidationError) {
       // The LLM returned a structurally invalid response.
       // Log field-level detail without echoing the full LLM payload.
-      console.error('[oracle] triage batch rejected — LLM output failed schema validation:');
-      console.error(err.message);
+      oracleLog.error('triage', 'batch.rejected', {
+        reason:  'schema_validation',
+        details: err.message,
+      });
     } else {
       // API transport error, network failure, or JSON parse error.
-      console.error('[oracle] triage batch failed:', (err as Error).message);
+      oracleLog.error('triage', 'batch.failed', {
+        error: (err as Error).message,
+      });
     }
     throw err;
   }
