@@ -36,12 +36,27 @@ The LLM **only classifies** — it outputs a category, confidence score, reasoni
 
 ### Failure categories
 
+The LLM must classify every failure as exactly one of these four values. The schema is enforced at runtime — any other value is rejected before reaching the policy engine.
+
 | Category | Meaning |
 |---|---|
 | `FLAKY` | Timing issue, race condition, or transient network error — retry-able |
 | `REGRESSION` | Genuine change in app behaviour or API contract break |
 | `ENV_ISSUE` | CI environment problem — certificate error, proxy, missing service |
 | `NEW_BUG` | Previously unseen failure that doesn't fit the above |
+
+To add a category: add it to `TriageCategory` in `src/types.ts`. The Zod schema in `src/schemas.ts` picks it up automatically via `z.nativeEnum(TriageCategory)`.
+
+### Agent proposal types
+
+Agent proposals must use one of these `proposal_type` values. Any other value is rejected at intake before reaching the policy engine.
+
+| Type | Meaning |
+|---|---|
+| `retry_test` | Request a test re-run. Approved/held/rejected based on confidence and retry history. |
+| `request_human_review` | Flag for operator review. Always approved (low-risk acknowledgement). |
+
+To add a proposal type: add it to `AGENT_PROPOSAL_TYPES` in `src/schemas.ts`, add a handler in `decideAgentProposal()` in `src/policy-engine.ts`, and add an executor in `src/index.ts` if the action has a side effect.
 
 ---
 

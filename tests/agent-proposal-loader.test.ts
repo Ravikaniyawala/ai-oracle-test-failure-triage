@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { loadAgentProposals } from '../src/agent-proposal-loader.js';
+import { loadAgentProposals, VALID_PROPOSAL_TYPES } from '../src/agent-proposal-loader.js';
 
 const tmp = join(tmpdir(), 'oracle-agent-proposal-test');
 mkdirSync(tmp, { recursive: true });
@@ -86,6 +86,12 @@ describe('loadAgentProposals — valid input', () => {
     const path = write('empty-array.json', []);
     const proposals = loadAgentProposals(path);
     assert.equal(proposals.length, 0);
+  });
+
+  it('VALID_PROPOSAL_TYPES is re-exported and contains the known types', () => {
+    assert.ok(VALID_PROPOSAL_TYPES.has('retry_test'));
+    assert.ok(VALID_PROPOSAL_TYPES.has('request_human_review'));
+    assert.equal(VALID_PROPOSAL_TYPES.size, 2);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateTriageApiResponse } from '../src/triage-validator.js';
+import { validateTriageApiResponse, TriageValidationError } from '../src/triage-validator.js';
 
 // A complete, valid result item matching the prompt schema.
 const VALID_RESULT = {
@@ -66,10 +66,17 @@ describe('validateTriageApiResponse — valid input', () => {
     const result = validateTriageApiResponse({ results: [VALID_RESULT], extra_field: true });
     assert.equal(result.results.length, 1);
   });
+
+  it('throws TriageValidationError (not a generic Error) on invalid input', () => {
+    assert.throws(
+      () => validateTriageApiResponse(null),
+      (err: unknown) => err instanceof TriageValidationError,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Invalid structure — must throw
+// Invalid root structure (pre-checks) — messages must stay stable for callers
 // ---------------------------------------------------------------------------
 
 describe('validateTriageApiResponse — invalid root structure', () => {
@@ -121,31 +128,18 @@ describe('validateTriageApiResponse — invalid root structure', () => {
       /missing "results" array/,
     );
   });
-
-  it('throws when a result item is a string', () => {
-    assert.throws(
-      () => validateTriageApiResponse({ results: ['REGRESSION'] }),
-      /is not an object/,
-    );
-  });
-
-  it('throws when a result item is null', () => {
-    assert.throws(
-      () => validateTriageApiResponse({ results: [null] }),
-      /is not an object/,
-    );
-  });
 });
 
 // ---------------------------------------------------------------------------
-// Invalid field values — must throw with field-specific messages
+// Invalid result items — Zod validates field-by-field, errors include dot-path
+// Error format: "LLM response failed schema validation:\n  results.N.field: msg"
 // ---------------------------------------------------------------------------
 
 describe('validateTriageApiResponse — invalid result fields', () => {
   it('throws for unknown category string', () => {
     assert.throws(
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, category: 'BUG' }] }),
-      /invalid category/,
+      /results\.0\.category/,
     );
   });
 
@@ -153,49 +147,63 @@ describe('validateTriageApiResponse — invalid result fields', () => {
     const { category: _, ...rest } = VALID_RESULT;
     assert.throws(
       () => validateTriageApiResponse({ results: [rest] }),
-      /invalid category/,
+      /results\.0\.category/,
     );
   });
 
   it('throws for lowercase category', () => {
     assert.throws(
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, category: 'regression' }] }),
-      /invalid category/,
+      /results\.0\.category/,
+    );
+  });
+
+  it('throws for a non-object result item (string)', () => {
+    assert.throws(
+      () => validateTriageApiResponse({ results: ['REGRESSION'] }),
+      /results\.0/,
+    );
+  });
+
+  it('throws for a null result item', () => {
+    assert.throws(
+      () => validateTriageApiResponse({ results: [null] }),
+      /results\.0/,
     );
   });
 
   it('throws for confidence above 1', () => {
     assert.throws(
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, confidence: 1.1 }] }),
-      /invalid confidence/,
+      /results\.0\.confidence/,
     );
   });
 
   it('throws for confidence below 0', () => {
     assert.throws(
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, confidence: -0.1 }] }),
-      /invalid confidence/,
+      /results\.0\.confidence/,
     );
   });
 
   it('throws for NaN confidence', () => {
     assert.throws(
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, confidence: NaN }] }),
-      /invalid confidence/,
+      /results\.0\.confidence/,
     );
   });
 
   it('throws for Infinity confidence', () => {
     assert.throws(
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, confidence: Infinity }] }),
-      /invalid confidence/,
+      /results\.0\.confidence/,
     );
   });
 
   it('throws for string confidence', () => {
     assert.throws(
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, confidence: '0.9' }] }),
-      /invalid confidence/,
+      /results\.0\.confidence/,
     );
   });
 
@@ -203,14 +211,14 @@ describe('validateTriageApiResponse — invalid result fields', () => {
     const { reasoning: _, ...rest } = VALID_RESULT;
     assert.throws(
       () => validateTriageApiResponse({ results: [rest] }),
-      /missing string field: reasoning/,
+      /results\.0\.reasoning/,
     );
   });
 
   it('throws for non-string reasoning', () => {
     assert.throws(
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, reasoning: 42 }] }),
-      /missing string field: reasoning/,
+      /results\.0\.reasoning/,
     );
   });
 
@@ -218,14 +226,14 @@ describe('validateTriageApiResponse — invalid result fields', () => {
     const { suggested_fix: _, ...rest } = VALID_RESULT;
     assert.throws(
       () => validateTriageApiResponse({ results: [rest] }),
-      /missing string field: suggested_fix/,
+      /results\.0\.suggested_fix/,
     );
   });
 
   it('throws for empty testName', () => {
     assert.throws(
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, testName: '' }] }),
-      /missing or empty string field: testName/,
+      /results\.0\.testName/,
     );
   });
 
@@ -233,16 +241,23 @@ describe('validateTriageApiResponse — invalid result fields', () => {
     const { testName: _, ...rest } = VALID_RESULT;
     assert.throws(
       () => validateTriageApiResponse({ results: [rest] }),
-      /missing or empty string field: testName/,
+      /results\.0\.testName/,
     );
   });
 
-  it('includes result index in error message', () => {
+  it('error message includes the result index for the failing item', () => {
     assert.throws(
       () => validateTriageApiResponse({
         results: [VALID_RESULT, { ...VALID_RESULT, category: 'INVALID' }],
       }),
-      /result\[1\]/,
+      /results\.1\.category/,
+    );
+  });
+
+  it('error message contains "schema validation" for field-level errors', () => {
+    assert.throws(
+      () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, category: 'INVALID' }] }),
+      /schema validation/,
     );
   });
 });

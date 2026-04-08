@@ -1,42 +1,11 @@
 import { readFileSync } from 'fs';
+import { type ZodIssue } from 'zod';
+import { AgentProposalRawSchema, VALID_PROPOSAL_TYPES, type RawAgentProposal } from './schemas.js';
 import { type AgentProposal } from './types.js';
 
-// Raw JSON shape (snake_case, as documented in the spec)
-interface RawAgentProposal {
-  source_agent:  string;
-  proposal_type: string;
-  pipeline_id:   string;
-  test_name:     string;
-  error_hash:    string;
-  confidence:    number;
-  reasoning?:    string;
-  payload?:      Record<string, unknown>;
-}
-
-// Proposal types the policy engine can handle. Proposals with any other type
-// are rejected here — before reaching the policy engine — to enforce a closed
-// contract on externally-provided agent input.
-export const VALID_PROPOSAL_TYPES = new Set<string>([
-  'retry_test',
-  'request_human_review',
-]);
-
-function isValid(raw: unknown): raw is RawAgentProposal {
-  if (typeof raw !== 'object' || raw === null) return false;
-  const r = raw as Record<string, unknown>;
-  return (
-    typeof r['source_agent']  === 'string' &&
-    typeof r['proposal_type'] === 'string' &&
-    VALID_PROPOSAL_TYPES.has(r['proposal_type'] as string) &&
-    typeof r['pipeline_id']   === 'string' &&
-    typeof r['test_name']     === 'string' &&
-    typeof r['error_hash']    === 'string' &&
-    typeof r['confidence']    === 'number' &&
-    isFinite(r['confidence'] as number) &&
-    (r['confidence'] as number) >= 0 &&
-    (r['confidence'] as number) <= 1
-  );
-}
+// Re-export so existing consumers that import VALID_PROPOSAL_TYPES from this
+// module do not need to change their import path.
+export { VALID_PROPOSAL_TYPES };
 
 function toAgentProposal(raw: RawAgentProposal): AgentProposal {
   return {
@@ -53,24 +22,33 @@ function toAgentProposal(raw: RawAgentProposal): AgentProposal {
 
 /**
  * Read a JSON file containing one agent proposal object or an array of them,
- * validate each entry's required fields, and return valid proposals.
+ * validate each entry against AgentProposalRawSchema, and return valid proposals.
  *
- * Invalid entries are warned and skipped — they do not abort the batch.
+ * Invalid entries are logged with field-level context and skipped — they do
+ * not abort the batch (fail-partial, not fail-all).
+ *
  * Entries with unknown proposal_type or out-of-range confidence are rejected
  * here, before reaching the policy engine (fail-closed contract).
  */
 export function loadAgentProposals(filePath: string): AgentProposal[] {
-  const text  = readFileSync(filePath, 'utf8');
+  const text   = readFileSync(filePath, 'utf8');
   const parsed = JSON.parse(text) as unknown;
   const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
 
   const proposals: AgentProposal[] = [];
   for (const item of items) {
-    if (!isValid(item)) {
-      console.warn('[oracle] agent proposal missing required fields, skipping:', JSON.stringify(item));
+    const result = AgentProposalRawSchema.safeParse(item);
+    if (!result.success) {
+      // Log field-level issues without echoing the full payload.
+      const issues = result.error.issues
+        .map((e: ZodIssue) =>
+          `${e.path.length > 0 ? e.path.map(String).join('.') : '(root)'}: ${e.message}`,
+        )
+        .join('; ');
+      console.warn(`[oracle] agent proposal rejected (schema): ${issues}`);
       continue;
     }
-    proposals.push(toAgentProposal(item));
+    proposals.push(toAgentProposal(result.data));
   }
   return proposals;
 }
