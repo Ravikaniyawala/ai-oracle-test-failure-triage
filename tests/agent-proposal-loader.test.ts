@@ -77,11 +77,9 @@ describe('loadAgentProposals — valid input', () => {
     assert.deepEqual(proposals[0]!.payload, { retryCount: 3 });
   });
 
-  it('passes through unknown proposal_type values without filtering', () => {
+  it('rejects entries with unknown proposal_type before reaching policy', () => {
     const path = write('unknown-type.json', { ...VALID_PROPOSAL, proposal_type: 'some_future_action' });
-    const proposals = loadAgentProposals(path);
-    assert.equal(proposals.length, 1);
-    assert.equal(proposals[0]!.proposalType, 'some_future_action');
+    assert.equal(loadAgentProposals(path).length, 0);
   });
 
   it('returns empty array for empty JSON array', () => {
@@ -134,6 +132,27 @@ describe('loadAgentProposals — invalid entries', () => {
 
   it('skips entry where confidence is a string', () => {
     const path = write('string-confidence.json', { ...VALID_PROPOSAL, confidence: '0.9' });
+    assert.equal(loadAgentProposals(path).length, 0);
+  });
+
+  it('rejects entry with confidence above 1', () => {
+    const path = write('confidence-too-high.json', { ...VALID_PROPOSAL, confidence: 1.5 });
+    assert.equal(loadAgentProposals(path).length, 0);
+  });
+
+  it('rejects entry with confidence below 0', () => {
+    const path = write('confidence-negative.json', { ...VALID_PROPOSAL, confidence: -0.1 });
+    assert.equal(loadAgentProposals(path).length, 0);
+  });
+
+  it('rejects entry with confidence exactly 0 — boundary is valid', () => {
+    const path = write('confidence-zero.json', { ...VALID_PROPOSAL, confidence: 0 });
+    assert.equal(loadAgentProposals(path).length, 1);
+  });
+
+  it('rejects entry with Infinity confidence', () => {
+    // JSON.stringify converts Infinity to null; test with > 1 instead
+    const path = write('confidence-infinity.json', { ...VALID_PROPOSAL, confidence: 999 });
     assert.equal(loadAgentProposals(path).length, 0);
   });
 

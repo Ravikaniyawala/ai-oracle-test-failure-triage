@@ -1,11 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { buildSystemPrompt, buildUserPrompt } from './prompt-builder.js';
+import { validateTriageApiResponse } from './triage-validator.js';
 import {
   TriageCategory,
   ReportFormat,
   type PlaywrightFailure,
   type TriageResult,
-  type TriageApiResponse,
 } from './types.js';
 
 const client = new Anthropic({ apiKey: process.env['ANTHROPIC_API_KEY'] });
@@ -40,9 +40,10 @@ async function triageBatch(
 
     const textBlock = response.content.find(b => b.type === 'text');
     const text = textBlock?.type === 'text' ? textBlock.text : '{}';
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as TriageApiResponse;
+    const raw    = JSON.parse(text.replace(/```json|```/g, '').trim()) as unknown;
+    const parsed = validateTriageApiResponse(raw);
 
-    return (parsed.results ?? []).map((r, idx) => ({
+    return parsed.results.map((r, idx) => ({
       ...(failures[idx] as PlaywrightFailure),
       category:     r.category,
       confidence:   r.confidence,
