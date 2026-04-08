@@ -13,16 +13,28 @@ interface RawAgentProposal {
   payload?:      Record<string, unknown>;
 }
 
+// Proposal types the policy engine can handle. Proposals with any other type
+// are rejected here — before reaching the policy engine — to enforce a closed
+// contract on externally-provided agent input.
+export const VALID_PROPOSAL_TYPES = new Set<string>([
+  'retry_test',
+  'request_human_review',
+]);
+
 function isValid(raw: unknown): raw is RawAgentProposal {
   if (typeof raw !== 'object' || raw === null) return false;
   const r = raw as Record<string, unknown>;
   return (
     typeof r['source_agent']  === 'string' &&
     typeof r['proposal_type'] === 'string' &&
+    VALID_PROPOSAL_TYPES.has(r['proposal_type'] as string) &&
     typeof r['pipeline_id']   === 'string' &&
     typeof r['test_name']     === 'string' &&
     typeof r['error_hash']    === 'string' &&
-    typeof r['confidence']    === 'number'
+    typeof r['confidence']    === 'number' &&
+    isFinite(r['confidence'] as number) &&
+    (r['confidence'] as number) >= 0 &&
+    (r['confidence'] as number) <= 1
   );
 }
 
@@ -44,7 +56,8 @@ function toAgentProposal(raw: RawAgentProposal): AgentProposal {
  * validate each entry's required fields, and return valid proposals.
  *
  * Invalid entries are warned and skipped — they do not abort the batch.
- * Unknown proposal_type values pass through here; decisioning rejects them.
+ * Entries with unknown proposal_type or out-of-range confidence are rejected
+ * here, before reaching the policy engine (fail-closed contract).
  */
 export function loadAgentProposals(filePath: string): AgentProposal[] {
   const text  = readFileSync(filePath, 'utf8');
