@@ -1,79 +1,73 @@
-import { TriageCategory, type TriageApiResponse } from './types.js';
+import { ZodError, type ZodIssue } from 'zod';
+import { TriageApiResponseSchema } from './schemas.js';
+import { type TriageApiResponse } from './types.js';
 
-const VALID_CATEGORIES = new Set<string>(Object.values(TriageCategory));
-
-function isValidCategory(value: unknown): value is TriageCategory {
-  return typeof value === 'string' && VALID_CATEGORIES.has(value);
+/**
+ * Thrown when the LLM response does not conform to the triage output schema.
+ * Callers can use `instanceof TriageValidationError` to distinguish a
+ * malformed LLM response from an API transport error or network failure.
+ */
+export class TriageValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TriageValidationError';
+  }
 }
 
-function isValidConfidence(value: unknown): value is number {
-  return typeof value === 'number' && isFinite(value) && value >= 0 && value <= 1;
+/**
+ * Format a ZodError into a compact, multi-line string for structured logging.
+ *
+ * Each issue is rendered as "  <dot.path>: <message>" so the log line is
+ * actionable without including the raw LLM payload (which may contain
+ * sensitive test names, stack traces, or PII).
+ *
+ * Example output:
+ *   results.0.category: Invalid enum value. Expected 'FLAKY' | …, received 'BUG'
+ *   results.1.confidence: confidence must be <= 1
+ */
+function formatZodIssues(err: ZodError): string {
+  return err.issues
+    .map((e: ZodIssue) => {
+      const path = e.path.length > 0 ? e.path.map(String).join('.') : '(root)';
+      return `  ${path}: ${e.message}`;
+    })
+    .join('\n');
 }
 
 /**
  * Validate and narrow a raw parsed value to TriageApiResponse.
  *
- * Throws with a descriptive message on any structural or value violation.
- * Callers (triage.ts) must catch — never pass unvalidated LLM output to
- * the policy engine.
+ * Throws TriageValidationError with field-level context on any violation.
+ * Never throws for a valid response.  Callers must catch before passing
+ * the result to the policy engine.
  *
- * Validated per result item:
- *   testName      — non-empty string
- *   category      — one of FLAKY | REGRESSION | ENV_ISSUE | NEW_BUG
- *   confidence    — finite number in [0, 1]
- *   reasoning     — string
- *   suggested_fix — string
+ * Validation order:
+ *   1. Root must be a plain object (pre-check — cleaner message than Zod default)
+ *   2. "results" key must be an array (pre-check)
+ *   3. Every result item validated by TriageResultItemSchema via Zod
+ *      — category must be FLAKY | REGRESSION | ENV_ISSUE | NEW_BUG
+ *      — confidence must be a finite number in [0, 1]
+ *      — testName must be a non-empty string
+ *      — reasoning and suggested_fix must be strings
  */
 export function validateTriageApiResponse(raw: unknown): TriageApiResponse {
+  // Pre-checks give cleaner error messages for the two most common
+  // structural violations before handing off to Zod for field-level checks.
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    throw new Error('LLM response is not a JSON object');
+    throw new TriageValidationError('LLM response is not a JSON object');
   }
 
   const obj = raw as Record<string, unknown>;
-
   if (!Array.isArray(obj['results'])) {
-    throw new Error('LLM response missing "results" array');
+    throw new TriageValidationError('LLM response missing "results" array');
   }
 
-  const results = (obj['results'] as unknown[]).map((item, idx) => {
-    const prefix = `LLM result[${idx}]`;
+  const result = TriageApiResponseSchema.safeParse(raw);
+  if (!result.success) {
+    throw new TriageValidationError(
+      `LLM response failed schema validation:\n${formatZodIssues(result.error)}`,
+    );
+  }
 
-    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-      throw new Error(`${prefix} is not an object`);
-    }
-
-    const r = item as Record<string, unknown>;
-
-    if (typeof r['testName'] !== 'string' || r['testName'] === '') {
-      throw new Error(`${prefix} missing or empty string field: testName`);
-    }
-    if (!isValidCategory(r['category'])) {
-      throw new Error(
-        `${prefix} has invalid category: "${String(r['category'])}" ` +
-        `(must be one of ${[...VALID_CATEGORIES].join(', ')})`,
-      );
-    }
-    if (!isValidConfidence(r['confidence'])) {
-      throw new Error(
-        `${prefix} has invalid confidence: ${String(r['confidence'])} ` +
-        `(must be a finite number in [0, 1])`,
-      );
-    }
-    if (typeof r['reasoning'] !== 'string') {
-      throw new Error(`${prefix} missing string field: reasoning`);
-    }
-    if (typeof r['suggested_fix'] !== 'string') {
-      throw new Error(`${prefix} missing string field: suggested_fix`);
-    }
-
-    return {
-      testName:      r['testName']      as string,
-      category:      r['category']      as TriageCategory,
-      confidence:    r['confidence']    as number,
-      reasoning:     r['reasoning']     as string,
-      suggested_fix: r['suggested_fix'] as string,
-    };
-  });
-
-  return { results };
+  return result.data;
 }

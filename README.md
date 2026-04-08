@@ -36,12 +36,57 @@ The LLM **only classifies** — it outputs a category, confidence score, reasoni
 
 ### Failure categories
 
+The LLM must classify every failure as exactly one of these four values. The schema is enforced at runtime — any other value is rejected before reaching the policy engine.
+
 | Category | Meaning |
 |---|---|
 | `FLAKY` | Timing issue, race condition, or transient network error — retry-able |
 | `REGRESSION` | Genuine change in app behaviour or API contract break |
 | `ENV_ISSUE` | CI environment problem — certificate error, proxy, missing service |
 | `NEW_BUG` | Previously unseen failure that doesn't fit the above |
+
+To add a category: add it to `TriageCategory` in `src/types.ts`. The Zod schema in `src/schemas.ts` picks it up automatically via `z.nativeEnum(TriageCategory)`.
+
+### Agent proposal types
+
+Agent proposals must use one of these `proposal_type` values. Any other value is rejected at intake before reaching the policy engine.
+
+| Type | Meaning |
+|---|---|
+| `retry_test` | Request a test re-run. Approved/held/rejected based on confidence and retry history. |
+| `request_human_review` | Flag for operator review. Always approved (low-risk acknowledgement). |
+
+To add a proposal type: add it to `AGENT_PROPOSAL_TYPES` in `src/schemas.ts`, add a handler in `decideAgentProposal()` in `src/policy-engine.ts`, and add an executor in `src/index.ts` if the action has a side effect.
+
+### LLM output fields — reasoning and suggested_fix
+
+Both `reasoning` and `suggested_fix` are **required** on every result item. The schema enforces their presence; if the LLM omits either field the entire batch is rejected before reaching the policy engine.
+
+An empty string (`""`) is valid — the LLM may have nothing to add for a trivially obvious failure. What is not acceptable is the field being absent entirely, which indicates a structural prompt regression. This design keeps null-guard logic out of all downstream consumers (decision explainer, Slack notifier, summary writer).
+
+### Structured logging
+
+Validation and ingestion paths emit structured log lines in `key=value` format:
+
+```
+[oracle:<module>] <event>  key=value key=value
+```
+
+Examples:
+
+```
+[oracle:agent-proposal-loader] proposal.rejected  reason=schema_validation issues="proposal_type: must be one of retry_test, request_human_review"
+[oracle:agent-proposal-loader] proposal.throttled  reason=max_per_source_exceeded limit=20 source=flaky-detector-v1 test_name="Login > redirect"
+[oracle:feedback-processor] feedback.rejected  reason=invalid_or_unknown_type feedback_type=bad_type
+[oracle:triage] batch.rejected  reason=schema_validation details="LLM response failed schema validation: ..."
+```
+
+These lines are:
+- **Human-readable** in CI terminal output
+- **Parseable** by log aggregators (Datadog, Splunk, CloudWatch Insights)
+- **Safe**: field values are truncated at 200 characters — raw LLM payloads or proposal JSON are never echoed in full
+
+This logging is scoped to the validation and ingestion paths. General operational output in other modules continues to use `console` with the `[oracle]` prefix.
 
 ---
 
@@ -104,6 +149,8 @@ Add variables in **Settings → CI/CD → Variables**:
 | `ORACLE_FEEDBACK_PATH` | Path to feedback JSON file (enables feedback ingestion mode) | no | no |
 | `ORACLE_AGENT_PROPOSALS_PATH` | Path to agent proposals JSON file (enables agent proposal mode) | no | no |
 | `RETRY_COMMAND` | Shell command to execute when a `retry_test` proposal is approved | no | no |
+| `ORACLE_MAX_PROPOSALS` | Max total agent proposals per load (default: 100) | no | no |
+| `ORACLE_MAX_PROPOSALS_PER_SOURCE` | Max proposals per source_agent per load (default: 20) | no | no |
 
 ---
 
@@ -189,6 +236,8 @@ Optional variables for feedback and agent proposal modes:
 | `ORACLE_FEEDBACK_PATH` | Path to a feedback JSON file — enables feedback ingestion mode |
 | `ORACLE_AGENT_PROPOSALS_PATH` | Path to an agent proposals JSON file — enables agent proposal mode |
 | `RETRY_COMMAND` | Shell command run when an approved `retry_test` proposal executes |
+| `ORACLE_MAX_PROPOSALS` | Max total agent proposals per load (default: 100) |
+| `ORACLE_MAX_PROPOSALS_PER_SOURCE` | Max proposals per `source_agent` value per load (default: 20) |
 
 ---
 
@@ -289,6 +338,21 @@ The policy engine applies confidence thresholds to `retry_test` proposals:
 History overrides these thresholds when the pattern has enough signal (see [History-influenced decisions](#history-influenced-decisions) below).
 
 All proposals are recorded in `agent_proposals` and linked to the `actions` ledger regardless of verdict.
+
+### Rate limiting
+
+To prevent external agent sources from flooding the system, Oracle enforces two per-load ceilings:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ORACLE_MAX_PROPOSALS` | `100` | Maximum total proposals accepted from a single file load |
+| `ORACLE_MAX_PROPOSALS_PER_SOURCE` | `20` | Maximum proposals accepted per `source_agent` value per load |
+
+Proposals that would exceed either ceiling are dropped with a structured log entry and silently skipped — no error is thrown and other proposals in the batch are not affected.
+
+```
+[oracle:agent-proposal-loader] proposal.throttled  reason=max_per_source_exceeded limit=20 source=flaky-detector-v1 test_name="Login > redirect"
+```
 
 ---
 

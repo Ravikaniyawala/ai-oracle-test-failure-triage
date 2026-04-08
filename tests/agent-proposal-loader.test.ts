@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { loadAgentProposals } from '../src/agent-proposal-loader.js';
+import { loadAgentProposals, VALID_PROPOSAL_TYPES } from '../src/agent-proposal-loader.js';
 
 const tmp = join(tmpdir(), 'oracle-agent-proposal-test');
 mkdirSync(tmp, { recursive: true });
@@ -87,6 +87,12 @@ describe('loadAgentProposals — valid input', () => {
     const proposals = loadAgentProposals(path);
     assert.equal(proposals.length, 0);
   });
+
+  it('VALID_PROPOSAL_TYPES is re-exported and contains the known types', () => {
+    assert.ok(VALID_PROPOSAL_TYPES.has('retry_test'));
+    assert.ok(VALID_PROPOSAL_TYPES.has('request_human_review'));
+    assert.equal(VALID_PROPOSAL_TYPES.size, 2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -167,5 +173,100 @@ describe('loadAgentProposals — invalid entries', () => {
     assert.equal(proposals.length, 2);
     assert.equal(proposals[0]!.testName, 'MyTest > should pass');
     assert.equal(proposals[1]!.testName, 'Second > test');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rate limiting / throttling
+// ---------------------------------------------------------------------------
+
+describe('loadAgentProposals — rate limiting', () => {
+  it('caps total proposals at ORACLE_MAX_PROPOSALS', () => {
+    const batch = Array.from({ length: 5 }, (_, i) => ({
+      ...VALID_PROPOSAL,
+      test_name: `Test${i}`,
+    }));
+    const path = write('throttle-total.json', batch);
+
+    const prev = process.env['ORACLE_MAX_PROPOSALS'];
+    process.env['ORACLE_MAX_PROPOSALS'] = '3';
+    try {
+      const proposals = loadAgentProposals(path);
+      assert.equal(proposals.length, 3);
+    } finally {
+      if (prev === undefined) delete process.env['ORACLE_MAX_PROPOSALS'];
+      else process.env['ORACLE_MAX_PROPOSALS'] = prev;
+    }
+  });
+
+  it('caps proposals per source agent at ORACLE_MAX_PROPOSALS_PER_SOURCE', () => {
+    const batch = [
+      // 3 from 'agent-a' — only 2 allowed
+      { ...VALID_PROPOSAL, source_agent: 'agent-a', test_name: 'A1' },
+      { ...VALID_PROPOSAL, source_agent: 'agent-a', test_name: 'A2' },
+      { ...VALID_PROPOSAL, source_agent: 'agent-a', test_name: 'A3' },
+      // 1 from 'agent-b' — always accepted
+      { ...VALID_PROPOSAL, source_agent: 'agent-b', test_name: 'B1' },
+    ];
+    const path = write('throttle-per-source.json', batch);
+
+    const prev = process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'];
+    process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'] = '2';
+    try {
+      const proposals = loadAgentProposals(path);
+      assert.equal(proposals.length, 3);  // 2 from agent-a + 1 from agent-b
+      assert.equal(proposals.filter(p => p.sourceAgent === 'agent-a').length, 2);
+      assert.equal(proposals.filter(p => p.sourceAgent === 'agent-b').length, 1);
+    } finally {
+      if (prev === undefined) delete process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'];
+      else process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'] = prev;
+    }
+  });
+
+  it('returns all proposals when counts are within limits', () => {
+    const batch = Array.from({ length: 3 }, (_, i) => ({
+      ...VALID_PROPOSAL,
+      test_name: `WithinLimit${i}`,
+    }));
+    const path = write('within-limits.json', batch);
+
+    const prevTotal  = process.env['ORACLE_MAX_PROPOSALS'];
+    const prevSource = process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'];
+    process.env['ORACLE_MAX_PROPOSALS']            = '10';
+    process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'] = '10';
+    try {
+      const proposals = loadAgentProposals(path);
+      assert.equal(proposals.length, 3);
+    } finally {
+      if (prevTotal  === undefined) delete process.env['ORACLE_MAX_PROPOSALS'];
+      else process.env['ORACLE_MAX_PROPOSALS'] = prevTotal;
+      if (prevSource === undefined) delete process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'];
+      else process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'] = prevSource;
+    }
+  });
+
+  it('global limit takes precedence over per-source limit', () => {
+    // 4 proposals across 2 sources; global limit of 2 means only 2 pass
+    const batch = [
+      { ...VALID_PROPOSAL, source_agent: 'x', test_name: 'X1' },
+      { ...VALID_PROPOSAL, source_agent: 'x', test_name: 'X2' },
+      { ...VALID_PROPOSAL, source_agent: 'y', test_name: 'Y1' },
+      { ...VALID_PROPOSAL, source_agent: 'y', test_name: 'Y2' },
+    ];
+    const path = write('global-takes-precedence.json', batch);
+
+    const prevTotal  = process.env['ORACLE_MAX_PROPOSALS'];
+    const prevSource = process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'];
+    process.env['ORACLE_MAX_PROPOSALS']            = '2';
+    process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'] = '10';
+    try {
+      const proposals = loadAgentProposals(path);
+      assert.equal(proposals.length, 2);
+    } finally {
+      if (prevTotal  === undefined) delete process.env['ORACLE_MAX_PROPOSALS'];
+      else process.env['ORACLE_MAX_PROPOSALS'] = prevTotal;
+      if (prevSource === undefined) delete process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'];
+      else process.env['ORACLE_MAX_PROPOSALS_PER_SOURCE'] = prevSource;
+    }
   });
 });
