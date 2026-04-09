@@ -20,6 +20,8 @@ import {
   getActionTypeTrend,
   getTopRecurringFailures,
   getSuppressionSummary,
+  getRecentRuns,
+  getActionVerdictSummary,
 } from './dashboard-queries.js';
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
@@ -141,6 +143,29 @@ export function createDashboardRouter(basePath = ''): Router {
     try {
       const { start, end } = dateParams(req);
       const data = cached(cacheKey('actions/suppression', req), () => getSuppressionSummary(start, end));
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Action verdict summary (approved / rejected / held / deferred counts)
+  router.get(`${api}/actions/verdict-summary`, (_req, res) => {
+    noCache(res);
+    try {
+      const data = cached('actions/verdict-summary', getActionVerdictSummary);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Recent runs (latest N, with per-run action counts)
+  router.get(`${api}/runs/recent`, (req, res) => {
+    noCache(res);
+    try {
+      const limit = parseInt(typeof req.query['limit'] === 'string' ? req.query['limit'] : '10', 10) || 10;
+      const data  = cached(`runs/recent|${limit}`, () => getRecentRuns(limit));
       res.json(data);
     } catch (err) {
       res.status(500).json({ error: String(err) });

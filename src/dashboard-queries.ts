@@ -15,8 +15,10 @@
 import { getDb } from './state-store.js';
 import {
   type ActionTypeTrendRow,
+  type ActionVerdictSummaryRow,
   type FailureCategoryTrendRow,
   type OverviewStats,
+  type RecentRunRow,
   type RecurringFailureRow,
   type RunVerdictTrendRow,
   type SuppressionSummaryRow,
@@ -202,6 +204,62 @@ export function getSuppressionSummary(
     WHERE verdict         = 'rejected'
       AND decision_reason LIKE 'history:%'
     GROUP BY decision_reason
+    ORDER BY count DESC
+  `).all();
+}
+
+/**
+ * Returns the most recent N runs, each annotated with per-run action counts.
+ *
+ * Per-run stats are derived from the actions table via subquery LEFT JOINs,
+ * so runs with no actions still appear (counts default to 0).
+ *
+ * Dashboard use: "Last 10 Runs" table and "Latest Run" panel on the Overview tab.
+ */
+export function getRecentRuns(limit = 10): RecentRunRow[] {
+  return getDb().prepare<[number], RecentRunRow>(`
+    SELECT
+      r.id,
+      r.timestamp,
+      r.pipeline_id,
+      r.verdict,
+      r.total_failures,
+      COALESCE(j.jiras_created, 0)  AS jiras_created,
+      COALESCE(s.suppressions,  0)  AS suppressions,
+      COALESCE(a.actions_taken, 0)  AS actions_taken
+    FROM runs r
+    LEFT JOIN (
+      SELECT run_id, COUNT(*) AS jiras_created
+      FROM actions
+      WHERE action_type = 'create_jira' AND execution_ok = 1
+      GROUP BY run_id
+    ) j ON j.run_id = r.id
+    LEFT JOIN (
+      SELECT run_id, COUNT(*) AS suppressions
+      FROM actions
+      WHERE verdict = 'rejected' AND decision_reason LIKE 'history:%'
+      GROUP BY run_id
+    ) s ON s.run_id = r.id
+    LEFT JOIN (
+      SELECT run_id, COUNT(*) AS actions_taken
+      FROM actions
+      GROUP BY run_id
+    ) a ON a.run_id = r.id
+    ORDER BY r.id DESC
+    LIMIT ?
+  `).all(limit);
+}
+
+/**
+ * Returns total action counts grouped by verdict.
+ *
+ * Dashboard use: "Action Verdict Summary" on the Actions tab.
+ */
+export function getActionVerdictSummary(): ActionVerdictSummaryRow[] {
+  return getDb().prepare<[], ActionVerdictSummaryRow>(`
+    SELECT verdict, COUNT(*) AS count
+    FROM actions
+    GROUP BY verdict
     ORDER BY count DESC
   `).all();
 }

@@ -243,6 +243,24 @@ export interface SuppressionSummaryRow {
   count:           number;
 }
 
+/** One row in the recent runs table — includes per-run action stats. */
+export interface RecentRunRow {
+  id:             number;
+  timestamp:      string;
+  pipeline_id:    string;
+  verdict:        string;
+  total_failures: number;
+  jiras_created:  number;
+  suppressions:   number;
+  actions_taken:  number;
+}
+
+/** Per-verdict action count for the Actions tab summary. */
+export interface ActionVerdictSummaryRow {
+  verdict: string;
+  count:   number;
+}
+
 /** Aggregated overview stats for the /api/v1/overview endpoint. */
 export interface OverviewStats {
   totalRuns:          number;

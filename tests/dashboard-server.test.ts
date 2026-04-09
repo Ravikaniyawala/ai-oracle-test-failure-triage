@@ -232,6 +232,70 @@ describe('GET /api/v1/actions/suppression', () => {
   });
 });
 
+describe('GET /api/v1/runs/recent', () => {
+  it('returns an array', async () => {
+    const body = await getJson('/api/v1/runs/recent');
+    assert.ok(Array.isArray(body));
+  });
+
+  it('rows have expected shape', async () => {
+    const body = await getJson('/api/v1/runs/recent') as Array<Record<string, unknown>>;
+    assert.ok(body.length > 0);
+    const row = body[0] as Record<string, unknown>;
+    assert.ok('id'             in row);
+    assert.ok('timestamp'      in row);
+    assert.ok('pipeline_id'    in row);
+    assert.ok('verdict'        in row);
+    assert.ok('total_failures' in row);
+    assert.ok('jiras_created'  in row);
+    assert.ok('suppressions'   in row);
+    assert.ok('actions_taken'  in row);
+  });
+
+  it('returns most recent run first (highest id)', async () => {
+    const body = await getJson('/api/v1/runs/recent') as Array<Record<string, unknown>>;
+    assert.ok(body.length >= 2);
+    const first  = body[0] as Record<string, unknown>;
+    const second = body[1] as Record<string, unknown>;
+    assert.ok((first['id'] as number) > (second['id'] as number));
+  });
+
+  it('respects limit param', async () => {
+    const body = await getJson('/api/v1/runs/recent?limit=1') as Array<unknown>;
+    assert.equal(body.length, 1);
+  });
+
+  it('suppressions count matches seeded data', async () => {
+    const body = await getJson('/api/v1/runs/recent') as Array<Record<string, unknown>>;
+    // run 1 has 1 history-based rejection
+    const run1 = body.find(r => r['id'] === 1) as Record<string, unknown> | undefined;
+    assert.ok(run1 !== undefined);
+    assert.equal(run1['suppressions'], 1);
+  });
+});
+
+describe('GET /api/v1/actions/verdict-summary', () => {
+  it('returns an array', async () => {
+    const body = await getJson('/api/v1/actions/verdict-summary');
+    assert.ok(Array.isArray(body));
+  });
+
+  it('rows have verdict and count', async () => {
+    const body = await getJson('/api/v1/actions/verdict-summary') as Array<Record<string, unknown>>;
+    assert.ok(body.length > 0);
+    const first = body[0] as Record<string, unknown>;
+    assert.ok('verdict' in first);
+    assert.ok('count'   in first);
+  });
+
+  it('rejected count = 1 (from seeded data)', async () => {
+    const body = await getJson('/api/v1/actions/verdict-summary') as Array<Record<string, unknown>>;
+    const rejected = body.find(r => r['verdict'] === 'rejected');
+    assert.ok(rejected !== undefined);
+    assert.equal(rejected['count'], 1);
+  });
+});
+
 describe('Cache-Control header', () => {
   it('sets no-store on all API responses', async () => {
     const res = await fetch(`${baseUrl}/api/v1/overview`);

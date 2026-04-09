@@ -1,7 +1,9 @@
 import type {
   ActionTypeTrendRow,
+  ActionVerdictSummaryRow,
   FailureCategoryTrendRow,
   OverviewStats,
+  RecentRunRow,
   RecurringFailureRow,
   RunVerdictTrendRow,
   SuppressionSummaryRow,
@@ -34,6 +36,8 @@ export const api = {
   failuresTrend:       (r: DateRange = {})          => get<FailureCategoryTrendRow[]>(buildUrl('/failures/trend', r)),
   failuresTop:         (r: DateRange & { limit?: number } = {}) =>
                          get<RecurringFailureRow[]>(buildUrl('/failures/top', r)),
-  actionsTrend:        (r: DateRange = {})          => get<ActionTypeTrendRow[]>(buildUrl('/actions/trend', r)),
-  actionsSuppression:  (r: DateRange = {})          => get<SuppressionSummaryRow[]>(buildUrl('/actions/suppression', r)),
+  actionsTrend:         (r: DateRange = {})                      => get<ActionTypeTrendRow[]>(buildUrl('/actions/trend', r)),
+  actionsSuppression:   (r: DateRange = {})                      => get<SuppressionSummaryRow[]>(buildUrl('/actions/suppression', r)),
+  actionsVerdictSummary: ()                                      => get<ActionVerdictSummaryRow[]>(buildUrl('/actions/verdict-summary')),
+  recentRuns:           (limit = 10)                             => get<RecentRunRow[]>(buildUrl('/runs/recent', { limit })),
 };
