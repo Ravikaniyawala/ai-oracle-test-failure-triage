@@ -16,6 +16,7 @@ import { getDb } from './state-store.js';
 import {
   type ActionTypeTrendRow,
   type FailureCategoryTrendRow,
+  type OverviewStats,
   type RecurringFailureRow,
   type RunVerdictTrendRow,
   type SuppressionSummaryRow,
@@ -203,4 +204,43 @@ export function getSuppressionSummary(
     GROUP BY decision_reason
     ORDER BY count DESC
   `).all();
+}
+
+/**
+ * Derives high-level overview stats from the existing query helpers.
+ * Called by GET /api/v1/overview.
+ */
+export function getOverviewStats(): OverviewStats {
+  const db = getDb();
+
+  const { total, clear } = db.prepare<[], { total: number; clear: number }>(`
+    SELECT
+      COUNT(*)                                           AS total,
+      SUM(CASE WHEN verdict = 'CLEAR' THEN 1 ELSE 0 END) AS clear
+    FROM runs
+  `).get() ?? { total: 0, clear: 0 };
+
+  const totalFailures = (db.prepare<[], { count: number }>(
+    `SELECT COUNT(*) AS count FROM failures`,
+  ).get() ?? { count: 0 }).count;
+
+  const suppressionsSaved = (db.prepare<[], { count: number }>(
+    `SELECT COUNT(*) AS count FROM actions
+     WHERE verdict = 'rejected' AND decision_reason LIKE 'history:%'`,
+  ).get() ?? { count: 0 }).count;
+
+  // Category breakdown from the failures table
+  const catRows = db.prepare<[], { category: string; count: number }>(
+    `SELECT category, COUNT(*) AS count FROM failures GROUP BY category`,
+  ).all();
+  const categoryBreakdown: Record<string, number> = {};
+  for (const row of catRows) categoryBreakdown[row.category] = row.count;
+
+  return {
+    totalRuns:         total,
+    clearRate:         total > 0 ? clear / total : 0,
+    totalFailures,
+    suppressionsSaved,
+    categoryBreakdown,
+  };
 }

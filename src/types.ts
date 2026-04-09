@@ -243,6 +243,22 @@ export interface SuppressionSummaryRow {
   count:           number;
 }
 
+/** Aggregated overview stats for the /api/v1/overview endpoint. */
+export interface OverviewStats {
+  totalRuns:          number;
+  clearRate:          number;   // 0–1
+  totalFailures:      number;
+  suppressionsSaved:  number;
+  categoryBreakdown:  Record<string, number>;
+}
+
+/** Server metadata returned by /healthz. */
+export interface DashboardMeta {
+  ok:     boolean;
+  uptime: number;
+  db:     'connected' | 'error';
+}
+
 // ── Agent proposal types ──────────────────────────────────────────────────────
 
 // Lifecycle status of a row in agent_proposals table.
