@@ -230,6 +230,9 @@ async function main(): Promise<void> {
     if (parsed.failures.length === 0) {
       console.log('[oracle] no failures found — verdict: CLEAR');
 
+      // Persist the CLEAR run so trend charts include clean pipeline runs.
+      saveRun(PIPELINE_ID, 0, [], 'CLEAR');
+
       // Write verdict artifact (unchanged structure).
       writeFileSync(VERDICT_PATH, JSON.stringify({
         verdict: 'CLEAR', FLAKY: 0, REGRESSION: 0, NEW_BUG: 0, ENV_ISSUE: 0,
@@ -269,8 +272,12 @@ async function main(): Promise<void> {
     const instincts = loadInstincts('./.instincts');
     const results   = await triageFailures(parsed.failures, instincts, parsed.detectedFormat);
 
-    // 2. Persist run + failures; collect ordered failure IDs
-    const runId      = saveRun(PIPELINE_ID, parsed.totalFailures, results);
+    // 2. Persist run + failures; collect ordered failure IDs.
+    //    Verdict is computed here so it can be stored on the run row immediately.
+    const summary = summarise(results);
+    const verdict = (summary[TriageCategory.REGRESSION] + summary[TriageCategory.NEW_BUG]) > 0
+      ? 'BLOCKED' : 'CLEAR';
+    const runId      = saveRun(PIPELINE_ID, parsed.totalFailures, results, verdict);
     const failureIds = saveFailures(runId, results);
 
     // 2.5. Compute and log historical pattern stats per failure.
@@ -392,10 +399,6 @@ async function main(): Promise<void> {
     await postPrComment(markdown);
 
     // 6. Verdict file
-    const summary = summarise(results);
-    const verdict = (summary[TriageCategory.REGRESSION] + summary[TriageCategory.NEW_BUG]) > 0
-      ? 'BLOCKED' : 'CLEAR';
-
     const failureSummaries = results.map(r => ({
       testName:      r.testName,
       errorHash:     r.errorHash,

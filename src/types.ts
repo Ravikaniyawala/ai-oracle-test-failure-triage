@@ -199,6 +199,50 @@ export interface PrRelevance {
   reasons: string[];
 }
 
+// ── Dashboard query result types ──────────────────────────────────────────────
+
+/** One data point in a runs-by-verdict time series. */
+export interface RunVerdictTrendRow {
+  /** Date bucket in YYYY-MM-DD format. */
+  day:     string;
+  /** 'CLEAR' or 'BLOCKED'. */
+  verdict: string;
+  count:   number;
+}
+
+/** One data point in a failures-by-category time series. */
+export interface FailureCategoryTrendRow {
+  day:      string;
+  /** One of the TriageCategory enum values. */
+  category: string;
+  count:    number;
+}
+
+/** One data point in an actions-by-type time series. */
+export interface ActionTypeTrendRow {
+  day:         string;
+  action_type: string;
+  /** 'approved' | 'rejected' | 'held' | 'deferred'. */
+  verdict:     string;
+  count:       number;
+}
+
+/** One row in a most-frequently-failing tests report. */
+export interface RecurringFailureRow {
+  test_name:   string;
+  error_hash:  string;
+  occurrences: number;
+  /** ISO 8601 timestamp of the most recent occurrence. */
+  last_seen:   string;
+}
+
+/** One row in a history-based suppression breakdown. */
+export interface SuppressionSummaryRow {
+  /** e.g. 'history:jira_already_created', 'history:duplicate_pattern'. */
+  decision_reason: string;
+  count:           number;
+}
+
 // ── Agent proposal types ──────────────────────────────────────────────────────
 
 // Lifecycle status of a row in agent_proposals table.
