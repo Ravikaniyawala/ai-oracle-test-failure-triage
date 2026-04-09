@@ -395,7 +395,13 @@ async function main(): Promise<void> {
     }
 
     // 5. PR comment + summary markdown
-    const markdown = writeSummary(results, parsed.totalTests, PIPELINE_ID);
+    const suppressionCount = decisionLog.filter(d => d.reason.startsWith('history:')).length;
+    const slackPosted      = decisionLog.some(d => d.actionType === 'notify_slack' && d.verdict === 'approved');
+    const markdown = writeSummary(results, parsed.totalTests, PIPELINE_ID, {
+      jirasCreated:    jiraCreated,
+      slackPosted,
+      suppressionCount,
+    });
     await postPrComment(markdown);
 
     // 6. Verdict file
