@@ -9,6 +9,41 @@ before anyone on your team has opened a browser tab.
 
 ---
 
+## Dashboard
+
+Oracle ships with a read-only dashboard for monitoring triage activity, failure trends, and the value Oracle has delivered over time.
+
+### Overview
+![Oracle Dashboard — Overview](docs/screenshots/dashboard-overview.png)
+
+Stat cards show total runs, clear rate, failures triaged, Jiras auto-filed, suppressions saved, and estimated time saved. The **Latest Run** panel shows the most recent pipeline verdict at a glance, and the **Last 10 Runs** table gives a compact audit trail with per-run action counts.
+
+### Failures
+![Oracle Dashboard — Failures](docs/screenshots/dashboard-failures.png)
+
+Stacked bar chart shows failure volume by category (FLAKY / REGRESSION / ENV_ISSUE / NEW_BUG) over time. The **Top Recurring Failures** table surfaces the noisiest tests by occurrence count.
+
+### Actions
+![Oracle Dashboard — Actions](docs/screenshots/dashboard-actions.png)
+
+Verdict summary cards show the total action breakdown (approved / rejected / held). The stacked trend chart shows action volume by type and verdict over time. The **Suppression Breakdown** table shows which history rules are blocking the most duplicate actions.
+
+### Running the dashboard
+
+```bash
+# Seed a local dev database with 14 days of realistic dummy data
+npm run db:seed
+
+# Start the API server (port 3000) against the seeded DB
+npm run dashboard:dev-seed
+
+# Start the Vite dev server (port 5173) in a second terminal
+npm run dashboard:ui
+# → open http://localhost:5173
+```
+
+---
+
 ## Why this exists
 
 Every failed pipeline triggers the same manual loop:
