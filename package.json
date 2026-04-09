@@ -11,17 +11,26 @@
     "triage:dry": "DRY_RUN=true tsx src/index.ts",
     "learn": "tsx src/learn.ts",
     "test": "tsx --test tests/**/*.test.ts",
-    "test:live": "tsx --test tests/triage.test.ts"
+    "test:live": "tsx --test tests/triage.test.ts",
+    "dashboard": "npm run dashboard:build && node dist/src/dashboard-server.js",
+    "dashboard:dev": "tsx src/dashboard-server.ts",
+    "dashboard:build": "cd dashboard-ui && npm run build",
+    "dashboard:ui": "cd dashboard-ui && npm run dev",
+    "dashboard:dev-seed": "ORACLE_STATE_DB_PATH=./dev.db tsx src/dashboard-server.ts",
+    "db:seed": "ORACLE_STATE_DB_PATH=./dev.db npx tsx scripts/seed-dev-db.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "better-sqlite3": "^12.8.0",
+    "express": "^4.21.0",
     "fast-xml-parser": "^4.3.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
+    "playwright": "^1.59.1",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0"
   }
