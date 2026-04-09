@@ -38,13 +38,21 @@ export default function OverviewPage() {
 
   const clearPct = `${(stats.clearRate * 100).toFixed(1)}%`;
 
+  // Time saved estimate: 15 min per Jira filed + 5 min per suppression
+  const minutesSaved = stats.jirasCreated * 15 + stats.suppressionsSaved * 5;
+  const timeSaved = minutesSaved >= 60
+    ? `~${(minutesSaved / 60).toFixed(1)} hrs`
+    : `~${minutesSaved} min`;
+
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 16, marginBottom: 32 }}>
         <StatCard label="Total Runs"         value={stats.totalRuns}         />
         <StatCard label="Clear Rate"         value={clearPct}                accent="var(--color-clear)" />
-        <StatCard label="Total Failures"     value={stats.totalFailures}     accent={stats.totalFailures > 0 ? 'var(--color-blocked)' : undefined} />
+        <StatCard label="Failures Triaged"   value={stats.failuresTriaged}   accent={stats.failuresTriaged > 0 ? 'var(--color-blocked)' : undefined} sub="classified by Oracle" />
+        <StatCard label="Jiras Created"      value={stats.jirasCreated}      accent="var(--color-accent)" sub="auto-filed" />
         <StatCard label="Suppressions Saved" value={stats.suppressionsSaved} sub="duplicate actions blocked" />
+        <StatCard label="Est. Time Saved"    value={timeSaved}               accent="var(--color-clear)" sub="15 min/Jira · 5 min/suppression" />
       </div>
 
       {Object.keys(stats.categoryBreakdown).length > 0 && (

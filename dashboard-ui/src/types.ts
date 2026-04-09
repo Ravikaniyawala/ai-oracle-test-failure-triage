@@ -38,7 +38,8 @@ export interface SuppressionSummaryRow {
 export interface OverviewStats {
   totalRuns:         number;
   clearRate:         number;
-  totalFailures:     number;
+  failuresTriaged:   number;
+  jirasCreated:      number;
   suppressionsSaved: number;
   categoryBreakdown: Record<string, number>;
 }

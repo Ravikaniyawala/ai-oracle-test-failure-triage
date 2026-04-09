@@ -229,6 +229,11 @@ export function getOverviewStats(): OverviewStats {
      WHERE verdict = 'rejected' AND decision_reason LIKE 'history:%'`,
   ).get() ?? { count: 0 }).count;
 
+  const jirasCreated = (db.prepare<[], { count: number }>(
+    `SELECT COUNT(*) AS count FROM actions
+     WHERE action_type = 'create_jira' AND execution_ok = 1`,
+  ).get() ?? { count: 0 }).count;
+
   // Category breakdown from the failures table
   const catRows = db.prepare<[], { category: string; count: number }>(
     `SELECT category, COUNT(*) AS count FROM failures GROUP BY category`,
@@ -237,9 +242,10 @@ export function getOverviewStats(): OverviewStats {
   for (const row of catRows) categoryBreakdown[row.category] = row.count;
 
   return {
-    totalRuns:         total,
-    clearRate:         total > 0 ? clear / total : 0,
-    totalFailures,
+    totalRuns:        total,
+    clearRate:        total > 0 ? clear / total : 0,
+    failuresTriaged:  totalFailures,
+    jirasCreated,
     suppressionsSaved,
     categoryBreakdown,
   };

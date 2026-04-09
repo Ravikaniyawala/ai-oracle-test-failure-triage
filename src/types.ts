@@ -247,7 +247,8 @@ export interface SuppressionSummaryRow {
 export interface OverviewStats {
   totalRuns:          number;
   clearRate:          number;   // 0–1
-  totalFailures:      number;
+  failuresTriaged:    number;
+  jirasCreated:       number;
   suppressionsSaved:  number;
   categoryBreakdown:  Record<string, number>;
 }

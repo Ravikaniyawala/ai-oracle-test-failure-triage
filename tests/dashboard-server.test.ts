@@ -143,9 +143,14 @@ describe('GET /api/v1/overview', () => {
     assert.equal(body['clearRate'], 0.5);
   });
 
-  it('returns totalFailures = 2', async () => {
+  it('returns failuresTriaged = 2', async () => {
     const body = await getJson('/api/v1/overview') as Record<string, unknown>;
-    assert.equal(body['totalFailures'], 2);
+    assert.equal(body['failuresTriaged'], 2);
+  });
+
+  it('returns jirasCreated = 0 (none executed ok in seed)', async () => {
+    const body = await getJson('/api/v1/overview') as Record<string, unknown>;
+    assert.equal(body['jirasCreated'], 0);
   });
 
   it('returns suppressionsSaved = 1', async () => {
