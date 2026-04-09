@@ -26,7 +26,8 @@ export function initDb(): void {
       timestamp       TEXT    NOT NULL,
       pipeline_id     TEXT    NOT NULL,
       total_failures  INTEGER NOT NULL,
-      categories_json TEXT    NOT NULL
+      categories_json TEXT    NOT NULL,
+      verdict         TEXT    NOT NULL DEFAULT 'BLOCKED'
     );
     CREATE TABLE IF NOT EXISTS failures (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +59,7 @@ export function initDb(): void {
       risk_score         REAL,
       decision_reason    TEXT,
       confidence         REAL,
+      created_at         TEXT,
       executed_at        TEXT,
       execution_ok       INTEGER,
       execution_detail   TEXT,
@@ -113,12 +115,23 @@ export function initDb(): void {
   addCol('actions', 'risk_score',      'REAL');
   addCol('actions', 'decision_reason', 'TEXT');
   addCol('actions', 'confidence',      'REAL');
+  addCol('actions', 'created_at',      'TEXT');
+  addCol('runs',    'verdict',         "TEXT NOT NULL DEFAULT 'BLOCKED'");
+}
+
+/**
+ * Return the raw better-sqlite3 Database handle for read-only dashboard queries.
+ * Must only be called after initDb().
+ */
+export function getDb(): Database.Database {
+  return db;
 }
 
 export function saveRun(
-  pipelineId: string,
+  pipelineId:    string,
   totalFailures: number,
-  results: TriageResult[],
+  results:       TriageResult[],
+  verdict:       'CLEAR' | 'BLOCKED',
 ): number {
   const categories = results.reduce<Record<string, number>>((acc, r) => {
     acc[r.category] = (acc[r.category] ?? 0) + 1;
@@ -126,14 +139,15 @@ export function saveRun(
   }, {});
 
   const stmt = db.prepare(
-    `INSERT INTO runs (timestamp, pipeline_id, total_failures, categories_json)
-     VALUES (?, ?, ?, ?)`
+    `INSERT INTO runs (timestamp, pipeline_id, total_failures, categories_json, verdict)
+     VALUES (?, ?, ?, ?, ?)`
   );
   const info = stmt.run(
     new Date().toISOString(),
     pipelineId,
     totalFailures,
     JSON.stringify(categories),
+    verdict,
   );
   return info.lastInsertRowid as number;
 }
@@ -172,8 +186,8 @@ export function saveAction(
   const info = db.prepare(
     `INSERT OR IGNORE INTO actions
        (run_id, failure_id, cluster_key, scope, action_type, action_fingerprint,
-        source, verdict, payload_json, risk_score, decision_reason, confidence)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        source, verdict, payload_json, risk_score, decision_reason, confidence, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     runId,
     proposal.failureId ?? null,
@@ -187,6 +201,7 @@ export function saveAction(
     null,
     decision.reason,
     decision.confidence,
+    new Date().toISOString(),
   );
   return info.changes === 1;
 }
