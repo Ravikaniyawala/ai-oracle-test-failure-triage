@@ -2,8 +2,8 @@ import { TriageCategory, type TriageResult } from './types.js';
 
 const BASE_URL    = process.env['ATLASSIAN_BASE_URL'];
 const TOKEN       = process.env['ATLASSIAN_TOKEN'];
+const EMAIL       = process.env['ATLASSIAN_EMAIL'];
 const PROJECT_KEY = process.env['ATLASSIAN_PROJECT_KEY'] ?? 'QA';
-const EMAIL       = process.env['ATLASSIAN_EMAIL'] ?? 'oracle@your-org.com';
 
 /**
  * Create a single Jira defect for the given triaged failure.
@@ -15,8 +15,8 @@ export async function createJiraDefect(result: TriageResult): Promise<string | n
     console.log('[oracle] DRY_RUN — skipping Jira for', result.testName);
     return null;
   }
-  if (!BASE_URL || !TOKEN) {
-    console.warn('[oracle] ATLASSIAN_BASE_URL or ATLASSIAN_TOKEN not set, skipping Jira');
+  if (!BASE_URL || !TOKEN || !EMAIL) {
+    console.warn('[oracle] ATLASSIAN_BASE_URL, ATLASSIAN_TOKEN, or ATLASSIAN_EMAIL not set — skipping Jira');
     return null;
   }
 
