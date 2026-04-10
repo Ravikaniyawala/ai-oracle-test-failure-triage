@@ -21,11 +21,19 @@ on:
         required: false
         type: string
         default: 'unknown'
+      dry-run:
+        description: 'Skip Jira and Slack side effects (set to false to enable live integrations)'
+        required: false
+        type: boolean
+        default: false
 
     secrets:
       anthropic-api-key:
         required: true
       atlassian-token:
+        required: false
+      atlassian-email:
+        description: 'Atlassian account email — required for Jira Basic Auth (e.g. you@your-org.com)'
         required: false
       atlassian-base-url:
         required: false
@@ -178,10 +186,11 @@ jobs:
         env:
           ANTHROPIC_API_KEY:      ${{ secrets.anthropic-api-key }}
           ATLASSIAN_TOKEN:        ${{ secrets.atlassian-token }}
+          ATLASSIAN_EMAIL:        ${{ secrets.atlassian-email }}
           ATLASSIAN_BASE_URL:     ${{ secrets.atlassian-base-url }}
           ATLASSIAN_PROJECT_KEY:  ${{ secrets.atlassian-project-key }}
           SLACK_WEBHOOK_URL:      ${{ secrets.slack-webhook-url }}
-          DRY_RUN:                'true'
+          DRY_RUN:                ${{ inputs.dry-run && 'true' || 'false' }}
           PLAYWRIGHT_REPORT_PATH: ${{ github.workspace }}/downloaded-results/
           REPORT_FORMAT:          ${{ inputs.report-format }}
           ORACLE_STATE_DB_PATH:   ${{ github.workspace }}/.oracle-cache/oracle-state.db
