@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import OverviewPage  from './pages/OverviewPage';
 import FailuresPage  from './pages/FailuresPage';
 import ActionsPage   from './pages/ActionsPage';
+import { fetchManifest } from './api';
 import './index.css';
 
 type Tab = 'overview' | 'failures' | 'actions';
@@ -18,12 +19,16 @@ function getTab(): Tab {
 }
 
 function getEmbed(): boolean {
-  return new URLSearchParams(window.location.search).get('embed') === 'true';
+  // Path-based: /repos/:repoId/embed activates embed layout without a query param.
+  // Query-param: ?embed=true remains supported for local mode and direct links.
+  return window.location.pathname.endsWith('/embed') ||
+    new URLSearchParams(window.location.search).get('embed') === 'true';
 }
 
 export default function App() {
-  const [tab,   setTab]   = useState<Tab>(getTab);
-  const [embed] = useState<boolean>(getEmbed);
+  const [tab,             setTab]             = useState<Tab>(getTab);
+  const [embed]                               = useState<boolean>(getEmbed);
+  const [repoDisplayName, setRepoDisplayName] = useState<string | null>(null);
 
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -31,12 +36,16 @@ export default function App() {
     window.history.replaceState(null, '', url.toString());
   }, [tab]);
 
+  useEffect(() => {
+    fetchManifest().then(m => { if (m) setRepoDisplayName(m.repo_display_name); });
+  }, []);
+
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', padding: embed ? '8px 16px' : '24px 16px' }}>
       {!embed && (
         <header style={{ marginBottom: 24 }}>
           <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text)', marginBottom: 4 }}>
-            🔮 Oracle Dashboard
+            🔮 Oracle Dashboard{repoDisplayName ? ` — ${repoDisplayName}` : ''}
           </h1>
           <p style={{ color: 'var(--color-muted)', fontSize: 12 }}>
             Read-only view of AI Oracle triage data

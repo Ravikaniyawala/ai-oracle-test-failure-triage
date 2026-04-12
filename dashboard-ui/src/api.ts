@@ -9,7 +9,19 @@ import type {
   SuppressionSummaryRow,
 } from './types';
 
-const BASE = (import.meta.env['VITE_BASE_PATH']?.replace(/\/$/, '') ?? '') + '/api/v1';
+function getRepoId(): string | null {
+  // Path-based: /repos/{repoId}/...
+  const m = window.location.pathname.match(/\/repos\/([^/]+)/);
+  if (m?.[1]) return m[1];
+  // Query-param fallback: ?repo={repoId}
+  return new URLSearchParams(window.location.search).get('repo');
+}
+
+function buildBase(): string {
+  const basePath = (import.meta.env['VITE_BASE_PATH'] as string | undefined)?.replace(/\/$/, '') ?? '';
+  const repoId   = getRepoId();
+  return repoId ? `${basePath}/api/repos/${repoId}` : `${basePath}/api/v1`;
+}
 
 interface DateRange {
   start?: string;
@@ -17,7 +29,7 @@ interface DateRange {
 }
 
 function buildUrl(path: string, params: Record<string, string | number | undefined> = {}): string {
-  const url = new URL(`${BASE}${path}`, window.location.origin);
+  const url = new URL(`${buildBase()}${path}`, window.location.origin);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined) url.searchParams.set(k, String(v));
   }
@@ -28,6 +40,19 @@ async function get<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
   return res.json() as Promise<T>;
+}
+
+export async function fetchManifest(): Promise<{ repo_display_name: string; repo_name: string } | null> {
+  const repoId = getRepoId();
+  if (!repoId) return null;
+  const basePath = (import.meta.env['VITE_BASE_PATH'] as string | undefined)?.replace(/\/$/, '') ?? '';
+  try {
+    const res = await fetch(`${basePath}/api/repos/${repoId}/manifest`);
+    if (!res.ok) return null;
+    return res.json() as Promise<{ repo_display_name: string; repo_name: string }>;
+  } catch {
+    return null;
+  }
 }
 
 export const api = {

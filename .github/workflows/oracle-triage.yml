@@ -199,6 +199,10 @@ jobs:
           GITHUB_TOKEN:           ${{ github.token }}
           GITHUB_REF_NAME:        ${{ github.ref_name }}
           GITHUB_REPOSITORY:      ${{ github.repository }}
+          ORACLE_REPO_ID:           ${{ github.repository_id }}
+          ORACLE_REPO_NAME:         ${{ github.repository }}
+          ORACLE_REPO_DISPLAY_NAME: ${{ github.event.repository.name }}
+          ORACLE_SNAPSHOT_ROOT:     ${{ github.workspace }}/oracle-snapshots
         run: npm run triage
         working-directory: oracle
 
@@ -255,3 +259,12 @@ jobs:
           name: oracle-state
           path: .oracle-cache/oracle-state.db
           retention-days: 30
+
+      - name: Upload Stage 2 snapshot artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oracle-snapshots
+          path: oracle-snapshots/
+          retention-days: 30
+          if-no-files-found: ignore
