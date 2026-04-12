@@ -13,6 +13,9 @@
  */
 
 import { Router, type Request, type Response } from 'express';
+import Database from 'better-sqlite3';
+import path from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   getOverviewStats,
   getRunVerdictTrend,
@@ -22,6 +25,7 @@ import {
   getSuppressionSummary,
   getRecentRuns,
   getActionVerdictSummary,
+  listReposFromSnapshotRoot,
 } from './dashboard-queries.js';
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
@@ -64,7 +68,15 @@ function cacheKey(prefix: string, req: Request): string {
 
 // ── Router factory ────────────────────────────────────────────────────────────
 
-export function createDashboardRouter(basePath = ''): Router {
+/**
+ * @param basePath  URL prefix for reverse-proxy deploys (default '').
+ * @param uiDist    Absolute path to dashboard-ui/dist/.  Required for the
+ *                  hosted-mode shell routes (/repos/:repoId and /repos/:repoId/embed)
+ *                  to serve index.html.  When absent those routes return 503.
+ *                  The server (dashboard-server.ts) computes this correctly and
+ *                  passes it down; the router itself does not guess filesystem paths.
+ */
+export function createDashboardRouter(basePath = '', uiDist?: string): Router {
   const router = Router();
   const api    = `${basePath}/api/v1`;
 
@@ -171,6 +183,129 @@ export function createDashboardRouter(basePath = ''): Router {
       res.status(500).json({ error: String(err) });
     }
   });
+
+  // ── Hosted-mode: repo-scoped routes (requires ORACLE_SNAPSHOT_ROOT) ──────
+  //
+  // When ORACLE_SNAPSHOT_ROOT is set, the full /api/v1/* surface is mirrored
+  // under /api/repos/:repoId/* so the existing dashboard pages work unchanged
+  // against per-repo snapshot DBs.  buildBase() in the frontend routes to the
+  // correct prefix automatically.
+
+  const SNAPSHOT_ROOT = process.env['ORACLE_SNAPSHOT_ROOT'];
+
+  if (SNAPSHOT_ROOT) {
+    // Open a read-only connection to a repo's snapshot DB.
+    // Returns null if the snapshot does not exist yet.
+    function openRepoDb(repoId: string): Database.Database | null {
+      const dbPath = path.join(SNAPSHOT_ROOT!, 'repos', repoId, 'latest.db');
+      if (!existsSync(dbPath)) return null;
+      const db = new Database(dbPath, { readonly: true });
+      // WAL reader — no PRAGMA journal_mode change needed on a readonly handle
+      return db;
+    }
+
+    // Execute fn with a repo DB; handles 404 / 500 and always closes the DB.
+    function withRepoDb<T>(
+      repoId: string,
+      res:    Response,
+      fn:     (db: Database.Database) => T,
+    ): void {
+      const db = openRepoDb(repoId);
+      if (!db) { res.status(404).json({ error: 'repo not found' }); return; }
+      try {
+        res.json(fn(db));
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      } finally {
+        db.close();
+      }
+    }
+
+    // ── Meta ──────────────────────────────────────────────────────────────────
+
+    // List all repos in the snapshot root
+    router.get(`${basePath}/api/repos`, (_req, res) => {
+      noCache(res);
+      try { res.json(listReposFromSnapshotRoot(SNAPSHOT_ROOT)); }
+      catch (err) { res.status(500).json({ error: String(err) }); }
+    });
+
+    // Per-repo manifest
+    router.get(`${basePath}/api/repos/:repoId/manifest`, (req, res) => {
+      noCache(res);
+      const manifestPath = path.join(SNAPSHOT_ROOT!, 'repos', req.params['repoId']!, 'manifest.json');
+      if (!existsSync(manifestPath)) { res.status(404).json({ error: 'repo not found' }); return; }
+      try { res.json(JSON.parse(readFileSync(manifestPath, 'utf8'))); }
+      catch (err) { res.status(500).json({ error: String(err) }); }
+    });
+
+    // ── Full API surface mirrored under /api/repos/:repoId/* ─────────────────
+    // Route names deliberately match the /api/v1/* paths so buildBase() in
+    // api.ts can switch prefix without changing any individual path segment.
+
+    router.get(`${basePath}/api/repos/:repoId/overview`, (req, res) => {
+      noCache(res);
+      withRepoDb(req.params['repoId']!, res, db => getOverviewStats(db));
+    });
+
+    router.get(`${basePath}/api/repos/:repoId/runs/trend`, (req, res) => {
+      noCache(res);
+      const { start, end } = dateParams(req);
+      withRepoDb(req.params['repoId']!, res, db => getRunVerdictTrend(start, end, db));
+    });
+
+    router.get(`${basePath}/api/repos/:repoId/failures/trend`, (req, res) => {
+      noCache(res);
+      const { start, end } = dateParams(req);
+      withRepoDb(req.params['repoId']!, res, db => getFailureCategoryTrend(start, end, db));
+    });
+
+    router.get(`${basePath}/api/repos/:repoId/failures/top`, (req, res) => {
+      noCache(res);
+      const { start, end } = dateParams(req);
+      const limit = parseInt(typeof req.query['limit'] === 'string' ? req.query['limit'] : '10', 10) || 10;
+      withRepoDb(req.params['repoId']!, res, db => getTopRecurringFailures(start, end, limit, db));
+    });
+
+    router.get(`${basePath}/api/repos/:repoId/actions/trend`, (req, res) => {
+      noCache(res);
+      const { start, end } = dateParams(req);
+      withRepoDb(req.params['repoId']!, res, db => getActionTypeTrend(start, end, db));
+    });
+
+    router.get(`${basePath}/api/repos/:repoId/actions/suppression`, (req, res) => {
+      noCache(res);
+      const { start, end } = dateParams(req);
+      withRepoDb(req.params['repoId']!, res, db => getSuppressionSummary(start, end, db));
+    });
+
+    router.get(`${basePath}/api/repos/:repoId/actions/verdict-summary`, (_req, res) => {
+      noCache(res);
+      withRepoDb(_req.params['repoId']!, res, db => getActionVerdictSummary(db));
+    });
+
+    router.get(`${basePath}/api/repos/:repoId/runs/recent`, (req, res) => {
+      noCache(res);
+      const limit = parseInt(typeof req.query['limit'] === 'string' ? req.query['limit'] : '10', 10) || 10;
+      withRepoDb(req.params['repoId']!, res, db => getRecentRuns(limit, db));
+    });
+
+    // ── SPA shell for repo-scoped pages ───────────────────────────────────────
+    // Serve index.html for both /repos/:repoId and /repos/:repoId/embed.
+    // The frontend reads repoId from window.location.pathname and sets embed
+    // mode from the path suffix (endsWith('/embed')) or ?embed=true.
+
+    function serveShell(_req: Request, res: Response): void {
+      if (uiDist && existsSync(uiDist)) {
+        res.sendFile(path.join(uiDist, 'index.html'));
+      } else {
+        res.status(503).json({ error: 'dashboard UI not built — run npm run dashboard:build' });
+      }
+    }
+
+    router.get(`${basePath}/repos/:repoId`,       serveShell);
+    router.get(`${basePath}/repos/:repoId/embed`,  serveShell);
+  }
 
   return router;
 }

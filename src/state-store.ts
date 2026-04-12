@@ -117,6 +117,9 @@ export function initDb(): void {
   addCol('actions', 'confidence',      'REAL');
   addCol('actions', 'created_at',      'TEXT');
   addCol('runs',    'verdict',         "TEXT NOT NULL DEFAULT 'BLOCKED'");
+  addCol('runs',    'repo_id',           'TEXT');
+  addCol('runs',    'repo_name',         'TEXT');
+  addCol('runs',    'repo_display_name', 'TEXT');
 }
 
 /**
@@ -132,6 +135,7 @@ export function saveRun(
   totalFailures: number,
   results:       TriageResult[],
   verdict:       'CLEAR' | 'BLOCKED',
+  repoIdentity?: { repoId: string; repoName: string; repoDisplayName: string } | null,
 ): number {
   const categories = results.reduce<Record<string, number>>((acc, r) => {
     acc[r.category] = (acc[r.category] ?? 0) + 1;
@@ -139,8 +143,8 @@ export function saveRun(
   }, {});
 
   const stmt = db.prepare(
-    `INSERT INTO runs (timestamp, pipeline_id, total_failures, categories_json, verdict)
-     VALUES (?, ?, ?, ?, ?)`
+    `INSERT INTO runs (timestamp, pipeline_id, total_failures, categories_json, verdict, repo_id, repo_name, repo_display_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const info = stmt.run(
     new Date().toISOString(),
@@ -148,6 +152,9 @@ export function saveRun(
     totalFailures,
     JSON.stringify(categories),
     verdict,
+    repoIdentity?.repoId           ?? null,
+    repoIdentity?.repoName         ?? null,
+    repoIdentity?.repoDisplayName  ?? null,
   );
   return info.lastInsertRowid as number;
 }

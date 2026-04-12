@@ -25,10 +25,23 @@ const PORT      = parseInt(process.env['DASHBOARD_PORT'] ?? '3000', 10);
 const BASE_PATH = (process.env['DASHBOARD_BASE_PATH'] ?? '').replace(/\/$/, '');
 const FRAME_ANCESTORS = process.env['DASHBOARD_FRAME_ANCESTORS'];
 
-// Resolve the UI dist directory — works for both:
-//   tsx src/dashboard-server.ts  → __dirname = src/
-//   node dist/src/dashboard-server.js → __dirname = dist/src/
-const UI_DIST = path.resolve(__dirname, '../../dashboard-ui/dist');
+// Resolve the project root by walking up from __dirname until package.json is found.
+// This is correct regardless of whether the server runs from:
+//   tsx src/dashboard-server.ts     → __dirname = <root>/src/
+//   node dist/src/dashboard-server  → __dirname = <root>/dist/src/
+// A simple '../../' offset breaks in the tsx case (exits the project root).
+function findProjectRoot(from: string): string {
+  let dir = from;
+  while (true) {
+    if (existsSync(path.join(dir, 'package.json'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return from; // filesystem root — give up, use start dir
+    dir = parent;
+  }
+}
+
+const PROJECT_ROOT = findProjectRoot(__dirname);
+const UI_DIST      = path.join(PROJECT_ROOT, 'dashboard-ui', 'dist');
 
 initDb();
 
@@ -46,7 +59,7 @@ app.use((_req, res, next) => {
 
 // ── API routes ────────────────────────────────────────────────────────────────
 
-const router = createDashboardRouter(BASE_PATH);
+const router = createDashboardRouter(BASE_PATH, UI_DIST);
 app.use(BASE_PATH || '/', router);
 
 // ── Static frontend ───────────────────────────────────────────────────────────

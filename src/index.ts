@@ -1,6 +1,8 @@
 import { execSync } from 'child_process';
 import { appendFileSync, writeFileSync } from 'fs';
 import { parseReport } from './report-parser.js';
+import { resolveRepoIdentity } from './repo-identity.js';
+import { exportSnapshot } from './snapshot-exporter.js';
 import { triageFailures } from './triage.js';
 import {
   initDb,
@@ -55,6 +57,15 @@ const PIPELINE_ID            =
 // Defaults preserve the existing filenames and cwd-relative behavior.
 const VERDICT_PATH          = process.env['ORACLE_VERDICT_PATH']          ?? 'oracle-verdict.json';
 const DECISION_SUMMARY_PATH = process.env['ORACLE_DECISION_SUMMARY_PATH'] ?? 'oracle-decision-summary.md';
+const SNAPSHOT_ROOT         = process.env['ORACLE_SNAPSHOT_ROOT'] ?? './oracle-snapshots';
+const DB_PATH               = process.env['ORACLE_STATE_DB_PATH'] ?? './oracle-state.db';
+
+const REPO_IDENTITY = resolveRepoIdentity();
+if (REPO_IDENTITY) {
+  console.log(`[oracle] repo identity: ${REPO_IDENTITY.repoId} (${REPO_IDENTITY.repoDisplayName})`);
+} else {
+  console.log('[oracle] repo identity: unavailable — snapshot export skipped');
+}
 
 // Sentinel run_id used for agent-proposal-mode actions (no CI run exists).
 // SQLite FK constraints are not enforced without PRAGMA foreign_keys = ON.
@@ -231,12 +242,30 @@ async function main(): Promise<void> {
       console.log('[oracle] no failures found — verdict: CLEAR');
 
       // Persist the CLEAR run so trend charts include clean pipeline runs.
-      saveRun(PIPELINE_ID, 0, [], 'CLEAR');
+      saveRun(PIPELINE_ID, 0, [], 'CLEAR', REPO_IDENTITY);
 
       // Write verdict artifact (unchanged structure).
       writeFileSync(VERDICT_PATH, JSON.stringify({
         verdict: 'CLEAR', FLAKY: 0, REGRESSION: 0, NEW_BUG: 0, ENV_ISSUE: 0,
       }, null, 2));
+
+      // Stage 2: export snapshot artifacts if repo identity is available
+      if (REPO_IDENTITY) {
+        try {
+          exportSnapshot({
+            snapshotRoot: SNAPSHOT_ROOT,
+            identity:     REPO_IDENTITY,
+            runId:        PIPELINE_ID,
+            timestamp:    new Date().toISOString(),
+            verdict:      'CLEAR',
+            results:      [],
+            dbSourcePath: DB_PATH,
+          });
+          console.log(`[oracle] snapshot exported to ${SNAPSHOT_ROOT}/repos/${REPO_IDENTITY.repoId}/`);
+        } catch (err) {
+          console.warn('[oracle] snapshot export failed (non-fatal):', err);
+        }
+      }
 
       // Write minimal decision summary artifact.
       writeFileSync(DECISION_SUMMARY_PATH, [
@@ -277,7 +306,7 @@ async function main(): Promise<void> {
     const summary = summarise(results);
     const verdict = (summary[TriageCategory.REGRESSION] + summary[TriageCategory.NEW_BUG]) > 0
       ? 'BLOCKED' : 'CLEAR';
-    const runId      = saveRun(PIPELINE_ID, parsed.totalFailures, results, verdict);
+    const runId      = saveRun(PIPELINE_ID, parsed.totalFailures, results, verdict, REPO_IDENTITY);
     const failureIds = saveFailures(runId, results);
 
     // 2.5. Compute and log historical pattern stats per failure.
@@ -417,6 +446,24 @@ async function main(): Promise<void> {
       VERDICT_PATH,
       JSON.stringify({ verdict, ...summary, failures: failureSummaries }, null, 2),
     );
+
+    // Stage 2: export snapshot artifacts if repo identity is available
+    if (REPO_IDENTITY) {
+      try {
+        exportSnapshot({
+          snapshotRoot: SNAPSHOT_ROOT,
+          identity:     REPO_IDENTITY,
+          runId:        PIPELINE_ID,
+          timestamp:    new Date().toISOString(),
+          verdict,
+          results,
+          dbSourcePath: DB_PATH,
+        });
+        console.log(`[oracle] snapshot exported to ${SNAPSHOT_ROOT}/repos/${REPO_IDENTITY.repoId}/`);
+      } catch (err) {
+        console.warn('[oracle] snapshot export failed (non-fatal):', err);
+      }
+    }
 
     // 7. Decision summary artifact
     writeDecisionSummary(decisionLog, PIPELINE_ID, parsed.totalFailures, prContext, relevanceMap, results);
