@@ -245,7 +245,9 @@ export function getRecentRuns(limit = 10, db?: Database.Database): RecentRunRow[
     LEFT JOIN (
       SELECT run_id, COUNT(*) AS jiras_created
       FROM actions
-      WHERE action_type = 'create_jira' AND execution_ok = 1
+      WHERE action_type = 'create_jira'
+        AND execution_ok = 1
+        AND (execution_detail IS NULL OR execution_detail NOT LIKE 'create_jira reused existing%')
       GROUP BY run_id
     ) j ON j.run_id = r.id
     LEFT JOIN (
@@ -303,7 +305,9 @@ export function getOverviewStats(db?: Database.Database): OverviewStats {
 
   const jirasCreated = (resolvedDb.prepare<[], { count: number }>(
     `SELECT COUNT(*) AS count FROM actions
-     WHERE action_type = 'create_jira' AND execution_ok = 1`,
+     WHERE action_type = 'create_jira'
+       AND execution_ok = 1
+       AND (execution_detail IS NULL OR execution_detail NOT LIKE 'create_jira reused existing%')`,
   ).get() ?? { count: 0 }).count;
 
   // Category breakdown from the failures table

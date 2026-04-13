@@ -116,6 +116,23 @@ jobs:
           name: ${{ inputs.report-artifact-name }}
           path: downloaded-results/
 
+      # ── Cache note ──────────────────────────────────────────────────────────
+      # The cache is a PERSISTENCE mechanism, not a locking mechanism.
+      # Two runners that start before either has saved its cache will both
+      # restore the same stale snapshot and will not see each other's in-flight
+      # Jira creations via the local SQLite dedupe layer.
+      #
+      # Mitigations:
+      #   1. Jira label search (oracle-fp-<fingerprint>) — second dedupe line,
+      #      built into Oracle; catches same-snapshot races automatically.
+      #   2. Caller-side `concurrency:` block — recommended for consuming repos
+      #      that run Oracle on the same branch concurrently.  Add to the job
+      #      that calls this workflow:
+      #
+      #        concurrency:
+      #          group: oracle-${{ github.ref }}
+      #          cancel-in-progress: false   # queue, don't cancel
+      # ────────────────────────────────────────────────────────────────────────
       - name: Restore Oracle state cache
         uses: actions/cache/restore@v4
         with:
@@ -221,6 +238,9 @@ jobs:
         if: always()
         run: cp -r oracle/.instincts .oracle-cache/.instincts 2>/dev/null || true
 
+      # Cache save runs even on failure so the next run gets the freshest
+      # possible snapshot.  This does NOT coordinate with concurrent runners —
+      # whichever run saves last wins.  See the Restore note above.
       - name: Save Oracle state cache
         if: always()
         uses: actions/cache/save@v4

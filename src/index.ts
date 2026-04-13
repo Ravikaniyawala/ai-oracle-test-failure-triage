@@ -391,14 +391,20 @@ async function main(): Promise<void> {
         if (decision.verdict !== 'approved') continue;
 
         if (proposal.type === 'create_jira') {
-          const key = await createJiraDefect(result);
+          const jiraResult = await createJiraDefect(result, proposal.fingerprint);
           recordActionExecution(proposal.fingerprint, {
-            ok:        key !== null,
-            detail:    key ?? 'create_jira failed or skipped',
+            ok:        jiraResult !== null,
+            detail:    jiraResult
+              ? (jiraResult.wasExisting
+                  ? `create_jira reused existing ${jiraResult.key}`
+                  : `create_jira created ${jiraResult.key}`)
+              : 'create_jira failed or skipped',
             timestamp: new Date().toISOString(),
           });
-          if (key !== null) {
-            jiraCreated.push({ testName: result.testName, category: result.category, key });
+          // Only count genuinely new issues — reused existing keys are not
+          // new creations and must not inflate 'Jiras created' metrics.
+          if (jiraResult !== null && !jiraResult.wasExisting) {
+            jiraCreated.push({ testName: result.testName, category: result.category, key: jiraResult.key });
           }
         }
       }
