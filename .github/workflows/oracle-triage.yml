@@ -26,6 +26,11 @@ on:
         required: false
         type: boolean
         default: false
+      triage-failure-mode:
+        description: 'fail-closed (default, blocks pipeline on Oracle error) or pass-through (exits 0, informational only)'
+        required: false
+        type: string
+        default: 'fail-closed'
 
     secrets:
       anthropic-api-key:
@@ -190,15 +195,16 @@ jobs:
           ATLASSIAN_BASE_URL:     ${{ secrets.atlassian-base-url }}
           ATLASSIAN_PROJECT_KEY:  ${{ secrets.atlassian-project-key }}
           SLACK_WEBHOOK_URL:      ${{ secrets.slack-webhook-url }}
-          DRY_RUN:                ${{ inputs.dry-run && 'true' || 'false' }}
-          PLAYWRIGHT_REPORT_PATH: ${{ github.workspace }}/downloaded-results/
-          REPORT_FORMAT:          ${{ inputs.report-format }}
-          ORACLE_STATE_DB_PATH:   ${{ github.workspace }}/.oracle-cache/oracle-state.db
-          ORACLE_PR_CONTEXT_PATH: ${{ env.PR_CONTEXT_FILE }}
-          CI_PIPELINE_ID:         ${{ inputs.pipeline-id }}
-          GITHUB_TOKEN:           ${{ github.token }}
-          GITHUB_REF_NAME:        ${{ github.ref_name }}
-          GITHUB_REPOSITORY:      ${{ github.repository }}
+          DRY_RUN:                      ${{ inputs.dry-run && 'true' || 'false' }}
+          ORACLE_TRIAGE_FAILURE_MODE:   ${{ inputs.triage-failure-mode }}
+          PLAYWRIGHT_REPORT_PATH:       ${{ github.workspace }}/downloaded-results/
+          REPORT_FORMAT:                ${{ inputs.report-format }}
+          ORACLE_STATE_DB_PATH:         ${{ github.workspace }}/.oracle-cache/oracle-state.db
+          ORACLE_PR_CONTEXT_PATH:       ${{ env.PR_CONTEXT_FILE }}
+          CI_PIPELINE_ID:               ${{ inputs.pipeline-id }}
+          GITHUB_TOKEN:                 ${{ github.token }}
+          GITHUB_REF_NAME:              ${{ github.ref_name }}
+          GITHUB_REPOSITORY:            ${{ github.repository }}
         run: npm run triage
         working-directory: oracle
 
@@ -230,13 +236,27 @@ jobs:
             }
 
             const v = JSON.parse(fs.readFileSync(path, 'utf8'));
-            const verdict  = v.verdict  || 'BLOCKED';
+            const rawVerdict = v.verdict || 'BLOCKED';
             const flaky    = v.FLAKY      || 0;
             const reg      = v.REGRESSION || 0;
             const newBug   = v.NEW_BUG    || 0;
             const env      = v.ENV_ISSUE  || 0;
 
-            console.log('[oracle] verdict:', verdict);
+            // DEGRADED means Oracle itself failed (e.g. API error, parse failure).
+            // In pass-through mode this should not block the downstream deploy gate,
+            // so map DEGRADED → CLEAR.  In fail-closed mode (default) treat it as
+            // BLOCKED to surface the problem.
+            const failureMode = '${{ inputs.triage-failure-mode }}';
+            const verdict = (rawVerdict === 'DEGRADED' && failureMode === 'pass-through')
+              ? 'CLEAR'
+              : rawVerdict === 'DEGRADED' ? 'BLOCKED' : rawVerdict;
+
+            if (rawVerdict === 'DEGRADED') {
+              console.log('[oracle] triage run was DEGRADED (Oracle error). reason:', v.reason || 'unknown');
+              console.log('[oracle] failure-mode:', failureMode, '→ emitting verdict:', verdict);
+            } else {
+              console.log('[oracle] verdict:', verdict);
+            }
             console.log('[oracle] FLAKY:', flaky, '| REGRESSION:', reg, '| NEW_BUG:', newBug, '| ENV_ISSUE:', env);
 
             fs.appendFileSync(process.env.GITHUB_OUTPUT, [

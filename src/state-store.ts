@@ -8,6 +8,7 @@ import {
   type FeedbackEntry,
   type PatternStats,
   type PrContext,
+  type RecentFailurePattern,
   type TriageResult,
 } from './types.js';
 
@@ -393,16 +394,53 @@ export function savePrContext(ctx: PrContext): void {
   );
 }
 
+/**
+ * Returns recent-history statistics for a failure identified by
+ * `testName + errorHash` (both fields required — error hashes are not globally
+ * unique across different tests).
+ *
+ * The `lookback` window is applied via a CTE so counts reflect only the N
+ * most-recent failures, not all-time history.
+ *
+ * Returns undefined when no matching rows exist in the window.
+ *
+ * NOTE: "recent" is scoped to *this* Oracle state DB.  In GitHub Actions the DB
+ * is restored from a per-repository cache, so history only extends back as far
+ * as the most recently saved cache entry for this repository.
+ */
 export function getRecentFailurePattern(
+  testName:  string,
   errorHash: string,
   lookback = 20,
-): { category: string; count: number } | undefined {
+): RecentFailurePattern | undefined {
   if (!db) return undefined;
-  return db.prepare(
-    `SELECT category, COUNT(*) as count
-     FROM failures
-     WHERE error_hash = ?
-     ORDER BY id DESC
-     LIMIT ?`
-  ).get(errorHash, lookback) as { category: string; count: number } | undefined;
+
+  // CTE selects the N most-recent rows for this test+hash pair.
+  // dominant CTE picks the top category by count within that window.
+  // Outer SELECT assembles all three values in one pass.
+  //
+  // When the window is empty the dominant CTE has no rows, so the outer
+  // SELECT returns no rows and .get() returns undefined.
+  const row = db.prepare(
+    `WITH recent AS (
+       SELECT category FROM failures
+       WHERE test_name = ? AND error_hash = ?
+       ORDER BY id DESC
+       LIMIT ?
+     ),
+     dominant AS (
+       SELECT category, COUNT(*) AS cnt
+       FROM recent
+       GROUP BY category
+       ORDER BY cnt DESC
+       LIMIT 1
+     )
+     SELECT
+       d.category                     AS dominantCategory,
+       d.cnt                          AS dominantCategoryCount,
+       (SELECT COUNT(*) FROM recent)  AS totalCount
+     FROM dominant d`,
+  ).get(testName, errorHash, lookback) as RecentFailurePattern | undefined;
+
+  return row;
 }
