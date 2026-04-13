@@ -68,19 +68,24 @@ if (REPO_IDENTITY) {
 }
 
 // Controls what happens when the triage run itself fails (e.g. API error, parse failure).
-//   fail-closed  (default) — exit 1, block the pipeline. Safe for gating deployments.
-//   pass-through           — exit 0, let the pipeline continue. Use when Oracle is informational only.
+//   fail-closed  (default) — exit 1, block the pipeline.  Safe for deploy gating.
+//   pass-through           — write a DEGRADED verdict artifact and exit 0.
+//                            The workflow "Determine verdict" step maps DEGRADED → CLEAR
+//                            so downstream deploy gates are not blocked.
+//                            Use this when Oracle is informational-only.
 const TRIAGE_FAILURE_MODE = process.env['ORACLE_TRIAGE_FAILURE_MODE'] === 'pass-through'
-  ? 'pass-through'
-  : 'fail-closed';
+  ? 'pass-through' as const
+  : 'fail-closed'  as const;
 
 // Sentinel run_id used for agent-proposal-mode actions (no CI run exists).
 // SQLite FK constraints are not enforced without PRAGMA foreign_keys = ON.
 const AGENT_MODE_RUN_ID = 0;
 
 async function main(): Promise<void> {
-  // DB must be ready for all modes.
-  initDb();
+  // ── Modes 1 & 2: DB init (no degraded-mode handling — these modes exit 0 on success)
+  if (FEEDBACK_PATH || AGENT_PROPOSALS_PATH) {
+    initDb();
+  }
 
   // ── Mode 1: Feedback ingestion ───────────────────────────────────────────
   // Set ORACLE_FEEDBACK_PATH to a JSON file to ingest feedback and exit.
@@ -212,6 +217,10 @@ async function main(): Promise<void> {
   }
 
   try {
+    // initDb() is inside the try-catch so that database failures are also
+    // subject to TRIAGE_FAILURE_MODE (degraded artifact written in pass-through).
+    initDb();
+
     console.log('[oracle] starting triage run', { PIPELINE_ID, REPORT_PATH });
 
     const parsed = parseReport(REPORT_PATH);
@@ -478,11 +487,15 @@ async function main(): Promise<void> {
     console.log('[oracle] triage complete', summary);
   } catch (err) {
     console.error('[oracle] fatal error:', err);
+
     if (TRIAGE_FAILURE_MODE === 'pass-through') {
-      // Write a DEGRADED verdict artifact so the "Determine verdict" workflow step
-      // always has a file to read.  The step maps DEGRADED → CLEAR when
-      // triage-failure-mode=pass-through, so downstream deploy gates are not blocked.
-      // Consumers who need to detect degraded runs can inspect the `degraded` field.
+      // Write a DEGRADED verdict artifact so the "Determine verdict" workflow
+      // step always has a file to read.  The step maps DEGRADED → CLEAR in
+      // pass-through mode, so downstream deploy gates are not blocked.
+      // Consumers who need to detect degraded runs can read the `degraded` flag.
+      //
+      // DEGRADED is NOT a triage classification — it means Oracle itself failed.
+      // Do not represent it as a test result.
       try {
         writeFileSync(VERDICT_PATH, JSON.stringify({
           verdict:  'DEGRADED',
@@ -493,9 +506,14 @@ async function main(): Promise<void> {
       } catch {
         // Best-effort — don't mask the original error in the log.
       }
-      console.warn('[oracle] ORACLE_TRIAGE_FAILURE_MODE=pass-through — wrote DEGRADED artifact, exiting 0 (pipeline NOT blocked)');
+      console.warn(
+        '[oracle] ORACLE_TRIAGE_FAILURE_MODE=pass-through — wrote DEGRADED artifact,' +
+        ' exiting 0 (pipeline NOT blocked)',
+      );
       process.exit(0);
     }
+
+
     process.exit(1);
   }
 }

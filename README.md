@@ -84,7 +84,7 @@ Oracle job triggers (when: on_failure)
      │    └─ Every run                                 →  post Slack summary
      │
      ├─ Writes oracle-decision-summary.md (CI artifact, PR comment)
-     ├─ Writes oracle-verdict.json (CLEAR / BLOCKED + per-failure stats)
+     ├─ Writes oracle-verdict.json (CLEAR / BLOCKED / DEGRADED + per-failure stats)
      └─ Persists run to SQLite for pattern learning
 ```
 
@@ -399,7 +399,12 @@ The `verdict` output (`CLEAR` or `BLOCKED`) can gate downstream jobs:
       - run: echo "Deploy approved — no regressions found"
 ```
 
-The full `oracle-verdict.json` structure is:
+### `oracle-verdict.json` contract
+
+Oracle writes `oracle-verdict.json` after every triage run.  There are two
+distinct shapes depending on whether triage succeeded or Oracle itself failed.
+
+**Normal verdict** (triage completed — all failures were classified):
 
 ```json
 {
@@ -426,6 +431,63 @@ The full `oracle-verdict.json` structure is:
 }
 ```
 
+`verdict` is `CLEAR` when all failures are `FLAKY` or `ENV_ISSUE`; `BLOCKED`
+when at least one is `REGRESSION` or `NEW_BUG`.
+
+**Degraded verdict** (Oracle itself failed — API error, DB error, parse
+failure, etc. — and `triage-failure-mode=pass-through` is set):
+
+```json
+{
+  "verdict": "DEGRADED",
+  "degraded": true,
+  "reason": "connect ECONNREFUSED 127.0.0.1:443",
+  "FLAKY": 0,
+  "REGRESSION": 0,
+  "NEW_BUG": 0,
+  "ENV_ISSUE": 0
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `verdict` | `"DEGRADED"` | Oracle failed — not a test classification result |
+| `degraded` | `true` | Flag for consumers that need to detect Oracle failures |
+| `reason` | `string` | Error message from the caught exception |
+| `FLAKY` … `ENV_ISSUE` | `0` | Always zero — no failures were classified |
+
+`DEGRADED` is **not** a category of test failure.  It means the Oracle process
+could not complete triage.  The "Determine verdict" workflow step maps it to:
+- `CLEAR` when `triage-failure-mode=pass-through` (pipeline not blocked)
+- `BLOCKED` when `triage-failure-mode=fail-closed` (pipeline blocked, default)
+
+In `fail-closed` mode no artifact is written — the workflow falls back to
+`BLOCKED` when the file is absent.
+
+### Oracle failure modes
+
+Control what happens when Oracle itself fails (API error, DB init failure,
+report parse error, etc.):
+
+| Workflow input | Env var | Default | Behavior |
+|---|---|---|---|
+| `triage-failure-mode: fail-closed` | `ORACLE_TRIAGE_FAILURE_MODE=fail-closed` | ✓ | Oracle exits 1 → triage job fails → downstream deploy gates are blocked |
+| `triage-failure-mode: pass-through` | `ORACLE_TRIAGE_FAILURE_MODE=pass-through` | | Oracle writes DEGRADED artifact and exits 0 → downstream deploy gates see `verdict=CLEAR` and are not blocked |
+
+**Default is `fail-closed`** — this is the safe choice for teams gating deploys
+on Oracle's verdict.  Use `pass-through` only when Oracle is informational and
+you do not want CI to be blocked by Oracle infrastructure failures.
+
+```yaml
+oracle-triage:
+  uses: your-org/ai-oracle/.github/workflows/oracle-triage.yml@main
+  with:
+    report-artifact-name: test-results
+    triage-failure-mode: pass-through   # optional — informational mode
+  secrets:
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
 Add the same secrets in **Settings → Secrets and variables → Actions**.
 
 Optional variables for feedback and agent proposal modes:
@@ -434,6 +496,7 @@ Optional variables for feedback and agent proposal modes:
 |---|---|
 | `ORACLE_FEEDBACK_PATH` | Path to a feedback JSON file — enables feedback ingestion mode |
 | `ORACLE_AGENT_PROPOSALS_PATH` | Path to an agent proposals JSON file — enables agent proposal mode |
+| `ORACLE_TRIAGE_FAILURE_MODE` | `fail-closed` (default) or `pass-through` — see Oracle failure modes above |
 | `RETRY_COMMAND` | Shell command run when an approved `retry_test` proposal executes |
 | `ORACLE_MAX_PROPOSALS` | Max total agent proposals per load (default: 100) |
 | `ORACLE_MAX_PROPOSALS_PER_SOURCE` | Max proposals per `source_agent` value per load (default: 20) |
@@ -762,7 +825,7 @@ tests/
 
 | Artifact | When written | Contents |
 |---|---|---|
-| `oracle-verdict.json` | Every run | Verdict (`CLEAR`/`BLOCKED`), category counts, per-failure pattern stats |
+| `oracle-verdict.json` | Every run (pass-through) / successful triage (fail-closed) | Verdict (`CLEAR`/`BLOCKED`/`DEGRADED`), category counts, per-failure pattern stats; see [oracle-verdict.json contract](#oracle-verdict-json-contract) |
 | `oracle-decision-summary.md` | Every run | All decisions grouped by verdict; history-influenced decisions highlighted |
 | `oracle-held-actions.json` | When held actions exist | Agent proposals awaiting operator review |
 
