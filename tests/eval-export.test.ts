@@ -99,11 +99,12 @@ function insertFeedback(
   errorHash:    string | null,
   oldValue:     string | null = null,
   newValue:     string | null = null,
+  pipelineId:   string | null = null,
 ): void {
   db.prepare(
     `INSERT INTO feedback (feedback_type, pipeline_id, test_name, error_hash, old_value, new_value, created_at)
-     VALUES (?, 'pipe-1', ?, ?, ?, ?, '2026-04-02T12:00:00.000Z')`,
-  ).run(feedbackType, testName, errorHash, oldValue, newValue);
+     VALUES (?, ?, ?, ?, ?, ?, '2026-04-02T12:00:00.000Z')`,
+  ).run(feedbackType, pipelineId, testName, errorHash, oldValue, newValue);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,7 +128,7 @@ describe('eval export — classification_corrected', () => {
   it('exports valid classification_corrected row as high-quality case', () => {
     const runId = insertRun(db, 'pipe-cc-1');
     insertFailure(db, runId, 'Suite > login test', 'hash001', 'FLAKY', 0.75);
-    insertFeedback(db, 'classification_corrected', 'Suite > login test', 'hash001', 'FLAKY', 'REGRESSION');
+    insertFeedback(db, 'classification_corrected', 'Suite > login test', 'hash001', 'FLAKY', 'REGRESSION', 'pipe-cc-1');
 
     const { cases, summary } = exportEvalCases(db);
     const c = cases.find(x => x.error_hash === 'hash001' && x.evidence_source === 'classification_corrected');
@@ -147,7 +148,7 @@ describe('eval export — classification_corrected', () => {
   it('skips classification_corrected with invalid new_value category', () => {
     const runId = insertRun(db, 'pipe-cc-invalid');
     insertFailure(db, runId, 'Suite > bad test', 'hash002', 'FLAKY');
-    insertFeedback(db, 'classification_corrected', 'Suite > bad test', 'hash002', 'FLAKY', 'NOT_A_CATEGORY');
+    insertFeedback(db, 'classification_corrected', 'Suite > bad test', 'hash002', 'FLAKY', 'NOT_A_CATEGORY', 'pipe-cc-invalid');
 
     const { cases, summary } = exportEvalCases(db);
     const c = cases.find(x => x.error_hash === 'hash002');
@@ -156,16 +157,31 @@ describe('eval export — classification_corrected', () => {
   });
 
   it('skips classification_corrected with no matching failure row', () => {
-    insertFeedback(db, 'classification_corrected', 'Suite > orphan test', 'hash_no_failure', 'FLAKY', 'REGRESSION');
+    insertFeedback(db, 'classification_corrected', 'Suite > orphan test', 'hash_no_failure', 'FLAKY', 'REGRESSION', 'pipe-orphan');
 
     const { summary } = exportEvalCases(db);
     assert.ok((summary.skipReasons['classification_corrected:no_matching_failure'] ?? 0) >= 1);
   });
 
   it('skips classification_corrected with null test_name', () => {
-    insertFeedback(db, 'classification_corrected', null, 'hash003', 'FLAKY', 'REGRESSION');
+    insertFeedback(db, 'classification_corrected', null, 'hash003', 'FLAKY', 'REGRESSION', 'pipe-null');
     const { summary } = exportEvalCases(db);
     assert.ok((summary.skipReasons['classification_corrected:missing_test_or_hash'] ?? 0) >= 1);
+  });
+
+  it('skips when unanchored and same test+hash produced different categories across runs', () => {
+    // Two runs, same test+hash, different Oracle categories — ambiguous without pipeline anchor
+    const run1 = insertRun(db, 'pipe-amb-1');
+    const run2 = insertRun(db, 'pipe-amb-2');
+    insertFailure(db, run1, 'Suite > ambiguous test', 'hashAMB', 'FLAKY',      0.7);
+    insertFailure(db, run2, 'Suite > ambiguous test', 'hashAMB', 'REGRESSION', 0.9);
+    // Feedback with no pipeline_id — cannot anchor
+    insertFeedback(db, 'classification_corrected', 'Suite > ambiguous test', 'hashAMB',
+                   'FLAKY', 'REGRESSION', null);
+
+    const { summary } = exportEvalCases(db);
+    assert.ok((summary.skipReasons['classification_corrected:no_matching_failure'] ?? 0) >= 1,
+      'ambiguous unanchored lookup should be skipped');
   });
 });
 
@@ -186,7 +202,7 @@ describe('eval export — retry_passed', () => {
   it('exports retry_passed as gold_category=FLAKY, gold_should_block=false', () => {
     const runId = insertRun(db, 'pipe-rp-1');
     insertFailure(db, runId, 'Suite > flaky test', 'hash010', 'REGRESSION', 0.9);
-    insertFeedback(db, 'retry_passed', 'Suite > flaky test', 'hash010');
+    insertFeedback(db, 'retry_passed', 'Suite > flaky test', 'hash010', null, null, 'pipe-rp-1');
 
     const { cases } = exportEvalCases(db);
     const c = cases.find(x => x.error_hash === 'hash010');
@@ -201,7 +217,7 @@ describe('eval export — retry_passed', () => {
   });
 
   it('skips retry_passed with null test_name', () => {
-    insertFeedback(db, 'retry_passed', null, 'hash011');
+    insertFeedback(db, 'retry_passed', null, 'hash011', null, null, 'pipe-rp-null');
     const { summary } = exportEvalCases(db);
     assert.ok((summary.skipReasons['retry_passed:missing_test_or_hash'] ?? 0) >= 1);
   });
@@ -224,7 +240,7 @@ describe('eval export — jira_closed_confirmed', () => {
   it('skips jira_closed_confirmed when min-quality is high (default)', () => {
     const runId = insertRun(db, 'pipe-jcc-1');
     insertFailure(db, runId, 'Suite > confirmed test', 'hash020', 'REGRESSION', 0.9);
-    insertFeedback(db, 'jira_closed_confirmed', 'Suite > confirmed test', 'hash020');
+    insertFeedback(db, 'jira_closed_confirmed', 'Suite > confirmed test', 'hash020', null, null, 'pipe-jcc-1');
 
     const { cases, summary } = exportEvalCases(db, 'high');
     const c = cases.find(x => x.error_hash === 'hash020');
@@ -235,7 +251,7 @@ describe('eval export — jira_closed_confirmed', () => {
   it('exports jira_closed_confirmed as medium-quality when min-quality=medium', () => {
     const runId = insertRun(db, 'pipe-jcc-2');
     insertFailure(db, runId, 'Suite > medium test', 'hash021', 'NEW_BUG', 0.85);
-    insertFeedback(db, 'jira_closed_confirmed', 'Suite > medium test', 'hash021');
+    insertFeedback(db, 'jira_closed_confirmed', 'Suite > medium test', 'hash021', null, null, 'pipe-jcc-2');
 
     const { cases } = exportEvalCases(db, 'medium');
     const c = cases.find(x => x.error_hash === 'hash021');
@@ -263,9 +279,9 @@ describe('eval export — excluded feedback types', () => {
   it('skips retry_failed, jira_closed_duplicate, action_overridden', () => {
     const runId = insertRun(db, 'pipe-excl-1');
     insertFailure(db, runId, 'Suite > excl test', 'hash030', 'REGRESSION');
-    insertFeedback(db, 'retry_failed',           'Suite > excl test', 'hash030');
-    insertFeedback(db, 'jira_closed_duplicate',  'Suite > excl test', 'hash030');
-    insertFeedback(db, 'action_overridden',       'Suite > excl test', 'hash030');
+    insertFeedback(db, 'retry_failed',          'Suite > excl test', 'hash030', null, null, 'pipe-excl-1');
+    insertFeedback(db, 'jira_closed_duplicate', 'Suite > excl test', 'hash030', null, null, 'pipe-excl-1');
+    insertFeedback(db, 'action_overridden',     'Suite > excl test', 'hash030', null, null, 'pipe-excl-1');
 
     const { cases, summary } = exportEvalCases(db);
     const excluded = cases.filter(x => x.error_hash === 'hash030');
@@ -277,9 +293,9 @@ describe('eval export — excluded feedback types', () => {
     const runId = insertRun(db, 'pipe-cnt-1');
     insertFailure(db, runId, 'Suite > counted', 'hash040', 'FLAKY');
     // 1 valid, 2 excluded
-    insertFeedback(db, 'retry_passed',    'Suite > counted', 'hash040');
-    insertFeedback(db, 'retry_failed',    'Suite > counted', 'hash040');
-    insertFeedback(db, 'action_overridden', null, null);
+    insertFeedback(db, 'retry_passed',    'Suite > counted', 'hash040', null, null, 'pipe-cnt-1');
+    insertFeedback(db, 'retry_failed',    'Suite > counted', 'hash040', null, null, 'pipe-cnt-1');
+    insertFeedback(db, 'action_overridden', null, null, null, null, null);
 
     const { summary } = exportEvalCases(db);
     assert.ok(summary.feedbackRowsSeen >= 3,   'should have counted all feedback rows');

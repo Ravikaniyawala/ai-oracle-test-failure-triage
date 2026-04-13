@@ -86,43 +86,68 @@ function deriveBlockFromCategory(category: string | null): boolean {
 }
 
 /**
- * Find the single most-recent failure row matching test_name + error_hash.
- * Returns null if no match or if more than one distinct run matches the same
- * test+hash at the same timestamp (ambiguous — skip the row).
+ * Find the failure row that a feedback row is labeling.
+ *
+ * Strategy:
+ * - If `pipelineId` is provided, anchor the lookup to that specific run.
+ *   If no failure in that run matches test_name + error_hash, return null.
+ * - If no `pipelineId`, fetch all matching failures across all runs.
+ *   If two or more runs produced different categories for this pattern the
+ *   feedback is ambiguous (we cannot know which prediction it refers to) —
+ *   return null.  If they all agree, use the most recent row.
  */
 function findFailure(
-  db:        Database.Database,
-  testName:  string,
-  errorHash: string,
+  db:         Database.Database,
+  testName:   string,
+  errorHash:  string,
+  pipelineId: string | null,
 ): { failure: FailureRow; run: RunRow } | null {
-  // Most recent failure with this pattern
-  const row = db.prepare<[string, string], FailureRow & RunRow>(`
+  if (pipelineId) {
+    // Anchored: look only in the specific pipeline the feedback references.
+    const row = db.prepare<[string, string, string], FailureRow & RunRow>(`
+      SELECT f.id, f.run_id, f.test_name, f.error_hash, f.category, f.confidence,
+             r.pipeline_id, r.repo_id, r.repo_name
+      FROM   failures f
+      JOIN   runs r ON r.id = f.run_id
+      WHERE  f.test_name = ? AND f.error_hash = ? AND r.pipeline_id = ?
+      ORDER  BY f.id DESC
+      LIMIT  1
+    `).get(testName, errorHash, pipelineId);
+
+    if (!row) return null;
+    return {
+      failure: { id: row.id, run_id: row.run_id, test_name: row.test_name,
+                 error_hash: row.error_hash, category: row.category, confidence: row.confidence },
+      run:     { id: row.run_id, pipeline_id: row.pipeline_id,
+                 repo_id: row.repo_id ?? null, repo_name: row.repo_name ?? null },
+    };
+  }
+
+  // Unanchored: fetch all matching failures and check for category ambiguity.
+  const rows = db.prepare<[string, string], FailureRow & RunRow>(`
     SELECT f.id, f.run_id, f.test_name, f.error_hash, f.category, f.confidence,
            r.pipeline_id, r.repo_id, r.repo_name
     FROM   failures f
     JOIN   runs r ON r.id = f.run_id
     WHERE  f.test_name = ? AND f.error_hash = ?
     ORDER  BY f.id DESC
-    LIMIT  1
-  `).get(testName, errorHash);
+  `).all(testName, errorHash);
 
-  if (!row) return null;
+  if (rows.length === 0) return null;
 
+  // Skip if different runs produced different classifications — we cannot
+  // safely attribute the feedback to one specific prediction.
+  const firstCategory = rows[0].category;
+  for (const r of rows) {
+    if (r.category !== firstCategory) return null;
+  }
+
+  const row = rows[0];
   return {
-    failure: {
-      id:         row.id,
-      run_id:     row.run_id,
-      test_name:  row.test_name,
-      error_hash: row.error_hash,
-      category:   row.category,
-      confidence: row.confidence,
-    },
-    run: {
-      id:          row.run_id,
-      pipeline_id: row.pipeline_id,
-      repo_id:     row.repo_id ?? null,
-      repo_name:   row.repo_name ?? null,
-    },
+    failure: { id: row.id, run_id: row.run_id, test_name: row.test_name,
+               error_hash: row.error_hash, category: row.category, confidence: row.confidence },
+    run:     { id: row.run_id, pipeline_id: row.pipeline_id,
+               repo_id: row.repo_id ?? null, repo_name: row.repo_name ?? null },
   };
 }
 
@@ -164,13 +189,13 @@ export function exportEvalCases(
       if (!VALID_CATEGORIES.has(newCat)) {
         skip('classification_corrected:invalid_new_category'); continue;
       }
-      const found = findFailure(db, row.test_name, row.error_hash);
+      const found = findFailure(db, row.test_name, row.error_hash, row.pipeline_id ?? null);
       if (!found) {
         skip('classification_corrected:no_matching_failure'); continue;
       }
       cases.push({
         schema_version:         SCHEMA_VERSION,
-        case_id:                `fp:${row.error_hash.slice(0, 8)}:${ft}`,
+        case_id:                `fb${row.id}:${row.error_hash.slice(0, 8)}:${ft}`,
         repo_id:                found.run.repo_id,
         repo_name:              found.run.repo_name,
         pipeline_id:            found.run.pipeline_id,
@@ -194,13 +219,13 @@ export function exportEvalCases(
       if (!row.test_name || !row.error_hash) {
         skip('retry_passed:missing_test_or_hash'); continue;
       }
-      const found = findFailure(db, row.test_name, row.error_hash);
+      const found = findFailure(db, row.test_name, row.error_hash, row.pipeline_id ?? null);
       if (!found) {
         skip('retry_passed:no_matching_failure'); continue;
       }
       cases.push({
         schema_version:         SCHEMA_VERSION,
-        case_id:                `fp:${row.error_hash.slice(0, 8)}:${ft}`,
+        case_id:                `fb${row.id}:${row.error_hash.slice(0, 8)}:${ft}`,
         repo_id:                found.run.repo_id,
         repo_name:              found.run.repo_name,
         pipeline_id:            found.run.pipeline_id,
@@ -229,13 +254,13 @@ export function exportEvalCases(
       if (!row.test_name || !row.error_hash) {
         skip('jira_closed_confirmed:missing_test_or_hash'); continue;
       }
-      const found = findFailure(db, row.test_name, row.error_hash);
+      const found = findFailure(db, row.test_name, row.error_hash, row.pipeline_id ?? null);
       if (!found) {
         skip('jira_closed_confirmed:no_matching_failure'); continue;
       }
       cases.push({
         schema_version:         SCHEMA_VERSION,
-        case_id:                `fp:${row.error_hash.slice(0, 8)}:${ft}`,
+        case_id:                `fb${row.id}:${row.error_hash.slice(0, 8)}:${ft}`,
         repo_id:                found.run.repo_id,
         repo_name:              found.run.repo_name,
         pipeline_id:            found.run.pipeline_id,
