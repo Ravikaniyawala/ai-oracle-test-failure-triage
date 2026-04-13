@@ -216,11 +216,18 @@ This means two runners that start before either has saved its cache will share
 history up to the last saved snapshot — they cannot see each other's in-flight
 Jira creations via SQLite alone.
 
-**Layer 2 — Jira label search (concurrent runner defence)**
+**Layer 2 — Jira label search (best-effort race mitigation)**
 Before creating a new issue, Oracle searches Jira for an existing unresolved
 issue in the same project with the label `oracle-fp-<fingerprint>`. Every issue
 Oracle creates carries this label. If a concurrent runner already filed the
-issue, the search finds it and the creation is skipped — no duplicate.
+issue, the search finds it and creation is skipped.
+
+> **Limitation:** the search and create calls are not atomic. Two runners can
+> both execute the search before either one has created the issue, both get no
+> match, and both create a ticket. This is a best-effort mitigation — it
+> reduces duplicates in practice but does not eliminate them. The
+> `oracle-fp-<fingerprint>` label still makes any duplicate easy to find and
+> close. For a hard guarantee, add caller-side `concurrency:` (see below).
 
 The dedup table also detects when previous Jiras were closed as duplicates
 (`jira_duplicates ≥ 2`) and suppresses further filing for that pattern.
@@ -234,8 +241,9 @@ The dedup table also detects when previous Jiras were closed as duplicates
 When two runners start within the same cache-save window (e.g. two PRs merge
 back-to-back before the first run saves its cache) both will read the same
 stale DB snapshot and the SQLite dedupe layer will not catch the race.
-The Jira label search (layer 2) catches this case. If Jira credentials are not
-configured, duplicate creation remains possible for concurrent fresh runs.
+The Jira label search (layer 2) reduces — but does not eliminate — this risk
+(see the limitation note above). If Jira credentials are not configured, or if
+both runners search before either creates, duplicate creation is still possible.
 
 **Recommended mitigation — caller-side `concurrency`:**
 
@@ -246,21 +254,30 @@ This serialises runs that share the same concurrency group so that the first
 run always saves its cache before the next run starts.
 
 ```yaml
-# In your calling workflow — restricts Oracle (and the job that calls it)
-# to one run at a time per branch.
+# .github/workflows/ci.yml  (in your consuming repository)
+name: CI
+on:
+  push:
+  pull_request:
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    concurrency:
-      group: oracle-${{ github.ref }}
-      cancel-in-progress: false   # queue, don't cancel — both results matter
     steps:
-      - uses: your-org/your-repo/.github/workflows/test.yml@main
+      - uses: actions/checkout@v4
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
 
   triage:
     needs: test
+    # Serialise Oracle triage runs per branch so each run saves its cache
+    # before the next one starts.  cancel-in-progress: false is intentional —
+    # cancelling a triage run would skip the cache save.
     concurrency:
-      group: oracle-${{ github.ref }}
+      group: oracle-triage-${{ github.ref }}
       cancel-in-progress: false
     uses: Ravikaniyawala/ai-oracle-test-failure-triage/.github/workflows/oracle-triage.yml@main
     with:
@@ -268,9 +285,6 @@ jobs:
       report-path: test-results/
     secrets: inherit
 ```
-
-> `cancel-in-progress: false` is intentional — cancelling a triage run would
-> prevent its cache save, defeating the purpose of serialisation.
 
 ---
 

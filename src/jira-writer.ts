@@ -13,11 +13,8 @@ function getCredentials(): { baseUrl: string; token: string; email: string; proj
 
 /**
  * Return a deterministic Jira label derived from the action fingerprint.
- * Used as an idempotency signal: before creating a new issue Oracle searches
- * for an unresolved issue in the same project with this label.  Concurrent
- * runners that both pass the local SQLite dedupe check (because neither has
- * seen the other's saved cache yet) will each try Jira — at most one will
- * win the race; the other will find the label and skip creation.
+ * Attached to every Oracle-created issue so that future runs — and concurrent
+ * runners — can search for it before filing a new ticket.
  */
 export function oracleFpLabel(fingerprint: string): string {
   return `oracle-fp-${fingerprint}`;
@@ -70,26 +67,39 @@ export async function findExistingJiraByFingerprint(
   }
 }
 
+export interface JiraDefectResult {
+  /** Jira issue key, e.g. "QA-123". */
+  key:         string;
+  /**
+   * true  — a new issue was created by this call.
+   * false — an existing unresolved issue with the oracle-fp label was found;
+   *         creation was skipped.  Should NOT be counted as a new Jira in
+   *         metrics or run summaries.
+   */
+  wasExisting: boolean;
+}
+
 /**
  * Create a single Jira defect for the given triaged failure.
  *
- * Idempotency flow:
+ * Duplicate-reduction flow (best-effort, not atomic):
  *   1. Local SQLite dedupe (wasJiraCreatedFor) — fast path, checked by caller.
- *   2. Jira-side label search (findExistingJiraByFingerprint) — second line of
- *      defence for concurrent runners that both pass step 1 because they share
- *      the same stale cache snapshot.
- *   3. Create — only reached if neither step found an existing issue.
+ *   2. Jira label search — searches for an unresolved issue in the same project
+ *      with label `oracle-fp-<fingerprint>` before creating.  Catches races
+ *      where two runners both passed step 1 on a stale cache snapshot.
+ *      NOTE: search and create are not atomic — two runners can both search
+ *      before either creates and still produce a duplicate.  This is a
+ *      best-effort mitigation, not a hard guarantee.
+ *   3. Create — attaches `oracle-fp-<fingerprint>` label so future runs and
+ *      concurrent runners can find the issue in step 2.
  *
- * The `oracle-fp-<fingerprint>` label is attached to every created issue so
- * future runs (and concurrent runners) can find it via the search above.
- *
- * Returns the Jira issue key (e.g. "QA-123") on success, or null on failure /
- * dry-run / missing credentials.
+ * Returns a JiraDefectResult on success (key + whether it was newly created),
+ * or null on failure / dry-run / missing credentials.
  */
 export async function createJiraDefect(
   result:      TriageResult,
   fingerprint: string,
-): Promise<string | null> {
+): Promise<JiraDefectResult | null> {
   if (process.env['DRY_RUN'] === 'true') {
     console.log('[oracle] DRY_RUN — skipping Jira for', result.testName);
     return null;
@@ -100,9 +110,9 @@ export async function createJiraDefect(
     return null;
   }
 
-  // Jira-side idempotency check: search before create.
+  // Jira-side duplicate-reduction check: search before create (best-effort).
   const existing = await findExistingJiraByFingerprint(fingerprint);
-  if (existing !== null) return existing;
+  if (existing !== null) return { key: existing, wasExisting: true };
 
   const { baseUrl, token, email, projectKey } = creds;
   const priority = result.category === TriageCategory.REGRESSION ? 'High' : 'Medium';
@@ -151,7 +161,7 @@ export async function createJiraDefect(
 
     const data = await res.json() as { key: string };
     console.log(`[oracle] Jira created: ${data.key} for "${result.testName}" [${fpLabel}]`);
-    return data.key;
+    return { key: data.key, wasExisting: false };
   } catch (err) {
     console.error('[oracle] Jira write error:', (err as Error).message);
     return null;

@@ -151,16 +151,15 @@ describe('createJiraDefect', () => {
     assert.equal(key, null);
   });
 
-  it('returns existing key and skips creation when search finds a match', async () => {
+  it('returns wasExisting=true and skips creation when search finds a match', async () => {
     setEnv(VALID_ENV);
-    // First call = search → hit; second call should NOT happen.
     let createCalled = false;
     const origFetch = globalThis.fetch;
     let callCount = 0;
     globalThis.fetch = async (_url, _init) => {
       callCount++;
       if (callCount === 1) {
-        // search
+        // search → hit
         return { ok: true, json: async () => ({ issues: [{ key: 'QA-55' }] }), text: async () => '' } as Response;
       }
       // create — should not be reached
@@ -169,15 +168,17 @@ describe('createJiraDefect', () => {
     };
     try {
       const { createJiraDefect } = await import('../src/jira-writer.js');
-      const key = await createJiraDefect(makeResult(), 'fp-existing');
-      assert.equal(key, 'QA-55');
-      assert.equal(createCalled, false, 'create endpoint should not be called when search returns a hit');
+      const result = await createJiraDefect(makeResult(), 'fp-existing');
+      assert.ok(result !== null);
+      assert.equal(result.key, 'QA-55');
+      assert.equal(result.wasExisting, true,  'wasExisting must be true when an existing issue is found');
+      assert.equal(createCalled,       false,  'create endpoint should not be called when search returns a hit');
     } finally {
       globalThis.fetch = origFetch;
     }
   });
 
-  it('creates issue with oracle-fp label when search returns no match', async () => {
+  it('creates issue with oracle-fp label when search returns no match (wasExisting=false)', async () => {
     setEnv(VALID_ENV);
     const capturedBodies: unknown[] = [];
     const origFetch = globalThis.fetch;
@@ -194,9 +195,11 @@ describe('createJiraDefect', () => {
     };
     try {
       const { createJiraDefect, oracleFpLabel } = await import('../src/jira-writer.js');
-      const fp  = 'cafebabe1234';
-      const key = await createJiraDefect(makeResult(), fp);
-      assert.equal(key, 'QA-77');
+      const fp     = 'cafebabe1234';
+      const result = await createJiraDefect(makeResult(), fp);
+      assert.ok(result !== null);
+      assert.equal(result.key,         'QA-77');
+      assert.equal(result.wasExisting, false, 'wasExisting must be false for a genuinely new issue');
       assert.equal(callCount, 2, 'should have made exactly 2 fetch calls (search + create)');
       const body = capturedBodies[0] as { fields: { labels: string[] } };
       assert.ok(
@@ -219,8 +222,8 @@ describe('createJiraDefect', () => {
     };
     try {
       const { createJiraDefect } = await import('../src/jira-writer.js');
-      const key = await createJiraDefect(makeResult(), 'fp-fail');
-      assert.equal(key, null);
+      const result = await createJiraDefect(makeResult(), 'fp-fail');
+      assert.equal(result, null);
     } finally {
       globalThis.fetch = origFetch;
     }
