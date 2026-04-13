@@ -201,20 +201,76 @@ in `src/schemas.ts` picks it up automatically via `z.nativeEnum(TriageCategory)`
 
 ### Deduplication
 
-Oracle fingerprints every action (category + test name + error hash). If the
-same failure pattern has already produced a Jira ticket in a previous run, the
-`create_jira` action is rejected automatically — no duplicate tickets within
-the same restored cache scope.
+Oracle fingerprints every action (`create_jira` type + test name + error hash).
+Deduplication happens in two layers:
 
-**Scope of deduplication:** the check reads from the SQLite state DB that is
-restored from the GitHub Actions cache (`oracle-state-${{ repository_id }}-`).
-This cache is per-repository and carries forward history across sequential runs.
-Concurrent runs that start before any run has saved its cache will not see each
-other's newly created Jiras — they share history up to the last saved cache
-snapshot but not in-flight state.
+**Layer 1 — local SQLite (fast path)**
+The `actions` ledger in the SQLite state DB is checked first. If a `create_jira`
+action with the same fingerprint already succeeded in a previous run, the action
+is rejected before any Jira API call is made.
+
+**Scope:** the SQLite DB is restored from the GitHub Actions cache key
+`oracle-state-<repository_id>-<run_id>`, with a fallback prefix
+`oracle-state-<repository_id>-` that matches the most recent saved snapshot.
+This means two runners that start before either has saved its cache will share
+history up to the last saved snapshot — they cannot see each other's in-flight
+Jira creations via SQLite alone.
+
+**Layer 2 — Jira label search (concurrent runner defence)**
+Before creating a new issue, Oracle searches Jira for an existing unresolved
+issue in the same project with the label `oracle-fp-<fingerprint>`. Every issue
+Oracle creates carries this label. If a concurrent runner already filed the
+issue, the search finds it and the creation is skipped — no duplicate.
 
 The dedup table also detects when previous Jiras were closed as duplicates
 (`jira_duplicates ≥ 2`) and suppresses further filing for that pattern.
+
+### Concurrency and the cache
+
+> **The GitHub Actions cache is a persistence mechanism, not a locking
+> mechanism.** Oracle uses it to carry SQLite history forward across sequential
+> runs. It does not prevent two runners from executing simultaneously.
+
+When two runners start within the same cache-save window (e.g. two PRs merge
+back-to-back before the first run saves its cache) both will read the same
+stale DB snapshot and the SQLite dedupe layer will not catch the race.
+The Jira label search (layer 2) catches this case. If Jira credentials are not
+configured, duplicate creation remains possible for concurrent fresh runs.
+
+**Recommended mitigation — caller-side `concurrency`:**
+
+The simplest and most reliable way to prevent races is to add a
+[`concurrency`](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/using-concurrency)
+block to the workflow or job in the **calling repository** that invokes Oracle.
+This serialises runs that share the same concurrency group so that the first
+run always saves its cache before the next run starts.
+
+```yaml
+# In your calling workflow — restricts Oracle (and the job that calls it)
+# to one run at a time per branch.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: oracle-${{ github.ref }}
+      cancel-in-progress: false   # queue, don't cancel — both results matter
+    steps:
+      - uses: your-org/your-repo/.github/workflows/test.yml@main
+
+  triage:
+    needs: test
+    concurrency:
+      group: oracle-${{ github.ref }}
+      cancel-in-progress: false
+    uses: Ravikaniyawala/ai-oracle-test-failure-triage/.github/workflows/oracle-triage.yml@main
+    with:
+      report-artifact-name: test-results
+      report-path: test-results/
+    secrets: inherit
+```
+
+> `cancel-in-progress: false` is intentional — cancelling a triage run would
+> prevent its cache save, defeating the purpose of serialisation.
 
 ---
 
@@ -224,10 +280,13 @@ Oracle creates one Jira defect per unique failure pattern when:
 - Category is `REGRESSION` or `NEW_BUG`
 - Confidence score exceeds 0.7
 - No existing open ticket for this fingerprint exists in the `actions` ledger
+  (SQLite layer 1) **and** no unresolved issue with the `oracle-fp-<fp>` label
+  exists in Jira (label-search layer 2)
 
 The defect includes the test name, error category, confidence score, reasoning,
 and suggested fix from the LLM. Defects are created via the Jira REST API using
-your `ATLASSIAN_TOKEN`.
+your `ATLASSIAN_TOKEN`. Every created issue receives an `oracle-fp-<fingerprint>`
+label that acts as a stable idempotency token across concurrent runners.
 
 ---
 

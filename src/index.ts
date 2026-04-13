@@ -391,7 +391,7 @@ async function main(): Promise<void> {
         if (decision.verdict !== 'approved') continue;
 
         if (proposal.type === 'create_jira') {
-          const key = await createJiraDefect(result);
+          const key = await createJiraDefect(result, proposal.fingerprint);
           recordActionExecution(proposal.fingerprint, {
             ok:        key !== null,
             detail:    key ?? 'create_jira failed or skipped',
