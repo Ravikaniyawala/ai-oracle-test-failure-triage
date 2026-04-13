@@ -87,8 +87,8 @@ export function writeSummary(
     lines.push('');
 
     for (const r of group) {
-      const pattern       = getRecentFailurePattern(r.errorHash);
-      const seenCount     = pattern?.count ?? 0;
+      const pattern       = getRecentFailurePattern(r.testName, r.errorHash);
+      const seenCount     = pattern?.totalCount ?? 0;
       const historyBadge  = seenCount > 1
         ? `⚠️ Seen **${seenCount}×** in recent history`
         : '🆕 First occurrence';

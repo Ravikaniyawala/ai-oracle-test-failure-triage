@@ -67,6 +67,13 @@ if (REPO_IDENTITY) {
   console.log('[oracle] repo identity: unavailable — snapshot export skipped');
 }
 
+// Controls what happens when the triage run itself fails (e.g. API error, parse failure).
+//   fail-closed  (default) — exit 1, block the pipeline. Safe for gating deployments.
+//   pass-through           — exit 0, let the pipeline continue. Use when Oracle is informational only.
+const TRIAGE_FAILURE_MODE = process.env['ORACLE_TRIAGE_FAILURE_MODE'] === 'pass-through'
+  ? 'pass-through'
+  : 'fail-closed';
+
 // Sentinel run_id used for agent-proposal-mode actions (no CI run exists).
 // SQLite FK constraints are not enforced without PRAGMA foreign_keys = ON.
 const AGENT_MODE_RUN_ID = 0;
@@ -471,6 +478,24 @@ async function main(): Promise<void> {
     console.log('[oracle] triage complete', summary);
   } catch (err) {
     console.error('[oracle] fatal error:', err);
+    if (TRIAGE_FAILURE_MODE === 'pass-through') {
+      // Write a DEGRADED verdict artifact so the "Determine verdict" workflow step
+      // always has a file to read.  The step maps DEGRADED → CLEAR when
+      // triage-failure-mode=pass-through, so downstream deploy gates are not blocked.
+      // Consumers who need to detect degraded runs can inspect the `degraded` field.
+      try {
+        writeFileSync(VERDICT_PATH, JSON.stringify({
+          verdict:  'DEGRADED',
+          degraded: true,
+          reason:   (err as Error).message ?? 'unknown error',
+          FLAKY: 0, REGRESSION: 0, NEW_BUG: 0, ENV_ISSUE: 0,
+        }, null, 2));
+      } catch {
+        // Best-effort — don't mask the original error in the log.
+      }
+      console.warn('[oracle] ORACLE_TRIAGE_FAILURE_MODE=pass-through — wrote DEGRADED artifact, exiting 0 (pipeline NOT blocked)');
+      process.exit(0);
+    }
     process.exit(1);
   }
 }

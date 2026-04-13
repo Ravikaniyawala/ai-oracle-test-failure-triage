@@ -129,13 +129,15 @@ Oracle uses **claude-sonnet-4-6** and batches up to 10 failures per API call.
 **A team running 100 triage jobs per month at an average of 5 failures each
 pays approximately $1.30/month in API costs** — less than a coffee.
 
-### Classification accuracy (from local experiments)
+### Classification accuracy
 
-Experiments were run against synthetic fixtures designed to represent each
-failure category unambiguously. Each fixture's error message and test name was
-written to match real-world patterns from CI failures.
+> **Evaluation status:** accuracy numbers below come from synthetic test
+> fixtures (`fixtures/experiment/`) that were hand-crafted to represent each
+> category unambiguously.  They are a sanity-check on prompt quality, not a
+> measurement of real-world precision or recall.  No evaluation has been run
+> against a labelled production dataset.
 
-| Category | Expected confidence | Notes |
+| Category | Observed confidence (synthetic fixtures) | Notes |
 |---|---|---|
 | `FLAKY` | ≥ 80% | Timeout, selector instability, retry patterns |
 | `REGRESSION` | ≥ 90% | Value mismatches on known-working endpoints |
@@ -143,9 +145,13 @@ written to match real-world patterns from CI failures.
 | `NEW_BUG` | ≥ 90% | 404 on feature-flagged / never-implemented paths |
 | Ambiguous | — | Oracle picks the most likely category; flagged in output |
 
-Accuracy improves over time via the **instinct system** — patterns seen 3+
-times with consistent classification (confidence > 0.7) are written to
-`.instincts/` and injected into the prompt on future runs.
+Real-world accuracy depends on error message quality, test name clarity, and
+how representative the fixtures are of your specific test suite.  The numbers
+above should be treated as a starting baseline, not a performance guarantee.
+
+Accuracy on *your* failures improves over time via the **instinct system** —
+patterns seen 3+ times with consistent classification (confidence > 0.7) are
+written to `.instincts/` and injected into the prompt on future runs.
 
 ---
 
@@ -197,8 +203,15 @@ in `src/schemas.ts` picks it up automatically via `z.nativeEnum(TriageCategory)`
 
 Oracle fingerprints every action (category + test name + error hash). If the
 same failure pattern has already produced a Jira ticket in a previous run, the
-`create_jira` action is rejected automatically — no duplicate tickets, even
-across concurrent pipeline runs.
+`create_jira` action is rejected automatically — no duplicate tickets within
+the same restored cache scope.
+
+**Scope of deduplication:** the check reads from the SQLite state DB that is
+restored from the GitHub Actions cache (`oracle-state-${{ repository_id }}-`).
+This cache is per-repository and carries forward history across sequential runs.
+Concurrent runs that start before any run has saved its cache will not see each
+other's newly created Jiras — they share history up to the last saved cache
+snapshot but not in-flight state.
 
 The dedup table also detects when previous Jiras were closed as duplicates
 (`jira_duplicates ≥ 2`) and suppresses further filing for that pattern.

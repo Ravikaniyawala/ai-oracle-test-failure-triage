@@ -134,6 +134,23 @@ export interface PatternStats {
   retryFailedCount:   number;
 }
 
+/**
+ * Recent-history signal for a failure pattern (testName + errorHash).
+ * Returned by getRecentFailurePattern() — used for the step-summary badge
+ * and available for future display enrichment.
+ *
+ * totalCount            — total occurrences of this testName+errorHash in the
+ *                         last `lookback` failures.  Used for the "Seen N×"
+ *                         badge — reflects repeat-occurrence frequency.
+ * dominantCategory      — the most common classification within the window.
+ * dominantCategoryCount — how many of the window rows share that category.
+ */
+export interface RecentFailurePattern {
+  totalCount:            number;
+  dominantCategory:      string;
+  dominantCategoryCount: number;
+}
+
 // ── Feedback types ────────────────────────────────────────────────────────────
 
 export type FeedbackType =
