@@ -134,3 +134,46 @@ export const AgentProposalRawSchema = z.object({
 
 /** TypeScript type inferred directly from the schema (snake_case form). */
 export type RawAgentProposal = z.infer<typeof AgentProposalRawSchema>;
+
+// ── Stage 2: Snapshot artifact schemas ───────────────────────────────────────
+
+/**
+ * Schema for repos/{repo_id}/manifest.json
+ */
+export const SnapshotManifestSchema = z.object({
+  schema_version:    z.number().int().positive(),
+  repo_id:           z.string().min(1),
+  repo_name:         z.string().min(1),
+  repo_display_name: z.string().min(1),
+  updated_at:        z.string().datetime({ offset: true }),
+  latest_run_id:     z.string().min(1),
+  latest_verdict:    z.enum(['CLEAR', 'BLOCKED']),
+  db_key:            z.string().min(1),
+});
+export type ValidatedManifest = z.infer<typeof SnapshotManifestSchema>;
+
+/**
+ * Schema for repos/{repo_id}/events/{run_id}.json
+ */
+export const RunEventFailureSchema = z.object({
+  test_name:  z.string().min(1),
+  error_hash: z.string().min(1),
+  category:   z.nativeEnum(TriageCategory),
+  confidence: ConfidenceSchema,
+});
+
+export const RunEventSchema = z.object({
+  schema_version:    z.number().int().positive(),
+  repo_id:           z.string().min(1),
+  repo_name:         z.string().min(1),
+  repo_display_name: z.string().min(1),
+  run_id:            z.string().min(1),
+  timestamp:         z.string().datetime({ offset: true }),
+  verdict:           z.enum(['CLEAR', 'BLOCKED']),
+  FLAKY:             z.number().int().min(0),
+  REGRESSION:        z.number().int().min(0),
+  NEW_BUG:           z.number().int().min(0),
+  ENV_ISSUE:         z.number().int().min(0),
+  failures:          z.array(RunEventFailureSchema),
+});
+export type ValidatedRunEvent = z.infer<typeof RunEventSchema>;

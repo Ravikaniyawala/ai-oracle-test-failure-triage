@@ -10,8 +10,16 @@
  *
  * Queries are intentionally simple and index-friendly — no window functions,
  * no CTEs, no JSON aggregation beyond what SQLite handles cleanly.
+ *
+ * Stage 2: each exported function accepts an optional `db` parameter.
+ * When provided, it is used instead of getDb(). Callers in hosted mode
+ * pass their own read-only DB instance opened against a repo-specific
+ * latest.db snapshot.
  */
 
+import Database from 'better-sqlite3';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import path from 'node:path';
 import { getDb } from './state-store.js';
 import {
   type ActionTypeTrendRow,
@@ -23,6 +31,7 @@ import {
   type RunVerdictTrendRow,
   type SuppressionSummaryRow,
 } from './types.js';
+import type { SnapshotManifest } from './snapshot-exporter.js';
 
 // ── Date clause helpers ───────────────────────────────────────────────────────
 
@@ -45,8 +54,9 @@ const DATE_MAX = '9999-12-31T23:59:59.999Z';
 export function getRunVerdictTrend(
   startDate?: string,
   endDate?:   string,
+  db?:        Database.Database,
 ): RunVerdictTrendRow[] {
-  return getDb().prepare<[string, string], RunVerdictTrendRow>(`
+  return (db ?? getDb()).prepare<[string, string], RunVerdictTrendRow>(`
     SELECT
       date(timestamp) AS day,
       verdict,
@@ -69,8 +79,9 @@ export function getRunVerdictTrend(
 export function getFailureCategoryTrend(
   startDate?: string,
   endDate?:   string,
+  db?:        Database.Database,
 ): FailureCategoryTrendRow[] {
-  return getDb().prepare<[string, string], FailureCategoryTrendRow>(`
+  return (db ?? getDb()).prepare<[string, string], FailureCategoryTrendRow>(`
     SELECT
       date(r.timestamp) AS day,
       f.category,
@@ -96,12 +107,13 @@ export function getFailureCategoryTrend(
 export function getActionTypeTrend(
   startDate?: string,
   endDate?:   string,
+  db?:        Database.Database,
 ): ActionTypeTrendRow[] {
-  const db = getDb();
+  const resolvedDb = db ?? getDb();
 
   if (startDate !== undefined || endDate !== undefined) {
     // Date-filtered: use created_at directly (only rows post-migration have it).
-    return db.prepare<[string, string], ActionTypeTrendRow>(`
+    return resolvedDb.prepare<[string, string], ActionTypeTrendRow>(`
       SELECT
         date(a.created_at) AS day,
         a.action_type,
@@ -120,7 +132,7 @@ export function getActionTypeTrend(
   // COALESCE prefers created_at; falls back to the parent run's timestamp.
   // Agent-mode actions (run_id = 0) with no created_at are excluded from
   // the fallback join since there is no matching runs row.
-  return db.prepare<[], ActionTypeTrendRow>(`
+  return resolvedDb.prepare<[], ActionTypeTrendRow>(`
     SELECT
       date(COALESCE(a.created_at, r.timestamp)) AS day,
       a.action_type,
@@ -146,8 +158,9 @@ export function getTopRecurringFailures(
   startDate?: string,
   endDate?:   string,
   limit = 10,
+  db?:   Database.Database,
 ): RecurringFailureRow[] {
-  return getDb().prepare<[string, string, number], RecurringFailureRow>(`
+  return (db ?? getDb()).prepare<[string, string, number], RecurringFailureRow>(`
     SELECT
       f.test_name,
       f.error_hash,
@@ -176,11 +189,12 @@ export function getTopRecurringFailures(
 export function getSuppressionSummary(
   startDate?: string,
   endDate?:   string,
+  db?:        Database.Database,
 ): SuppressionSummaryRow[] {
-  const db = getDb();
+  const resolvedDb = db ?? getDb();
 
   if (startDate !== undefined || endDate !== undefined) {
-    return db.prepare<[string, string], SuppressionSummaryRow>(`
+    return resolvedDb.prepare<[string, string], SuppressionSummaryRow>(`
       SELECT
         decision_reason,
         COUNT(*) AS count
@@ -196,7 +210,7 @@ export function getSuppressionSummary(
   }
 
   // No date filter: include pre-migration rows (created_at may be NULL).
-  return db.prepare<[], SuppressionSummaryRow>(`
+  return resolvedDb.prepare<[], SuppressionSummaryRow>(`
     SELECT
       decision_reason,
       COUNT(*) AS count
@@ -216,8 +230,8 @@ export function getSuppressionSummary(
  *
  * Dashboard use: "Last 10 Runs" table and "Latest Run" panel on the Overview tab.
  */
-export function getRecentRuns(limit = 10): RecentRunRow[] {
-  return getDb().prepare<[number], RecentRunRow>(`
+export function getRecentRuns(limit = 10, db?: Database.Database): RecentRunRow[] {
+  return (db ?? getDb()).prepare<[number], RecentRunRow>(`
     SELECT
       r.id,
       r.timestamp,
@@ -255,8 +269,8 @@ export function getRecentRuns(limit = 10): RecentRunRow[] {
  *
  * Dashboard use: "Action Verdict Summary" on the Actions tab.
  */
-export function getActionVerdictSummary(): ActionVerdictSummaryRow[] {
-  return getDb().prepare<[], ActionVerdictSummaryRow>(`
+export function getActionVerdictSummary(db?: Database.Database): ActionVerdictSummaryRow[] {
+  return (db ?? getDb()).prepare<[], ActionVerdictSummaryRow>(`
     SELECT verdict, COUNT(*) AS count
     FROM actions
     GROUP BY verdict
@@ -268,32 +282,32 @@ export function getActionVerdictSummary(): ActionVerdictSummaryRow[] {
  * Derives high-level overview stats from the existing query helpers.
  * Called by GET /api/v1/overview.
  */
-export function getOverviewStats(): OverviewStats {
-  const db = getDb();
+export function getOverviewStats(db?: Database.Database): OverviewStats {
+  const resolvedDb = db ?? getDb();
 
-  const { total, clear } = db.prepare<[], { total: number; clear: number }>(`
+  const { total, clear } = resolvedDb.prepare<[], { total: number; clear: number }>(`
     SELECT
       COUNT(*)                                           AS total,
       SUM(CASE WHEN verdict = 'CLEAR' THEN 1 ELSE 0 END) AS clear
     FROM runs
   `).get() ?? { total: 0, clear: 0 };
 
-  const totalFailures = (db.prepare<[], { count: number }>(
+  const totalFailures = (resolvedDb.prepare<[], { count: number }>(
     `SELECT COUNT(*) AS count FROM failures`,
   ).get() ?? { count: 0 }).count;
 
-  const suppressionsSaved = (db.prepare<[], { count: number }>(
+  const suppressionsSaved = (resolvedDb.prepare<[], { count: number }>(
     `SELECT COUNT(*) AS count FROM actions
      WHERE verdict = 'rejected' AND decision_reason LIKE 'history:%'`,
   ).get() ?? { count: 0 }).count;
 
-  const jirasCreated = (db.prepare<[], { count: number }>(
+  const jirasCreated = (resolvedDb.prepare<[], { count: number }>(
     `SELECT COUNT(*) AS count FROM actions
      WHERE action_type = 'create_jira' AND execution_ok = 1`,
   ).get() ?? { count: 0 }).count;
 
   // Category breakdown from the failures table
-  const catRows = db.prepare<[], { category: string; count: number }>(
+  const catRows = resolvedDb.prepare<[], { category: string; count: number }>(
     `SELECT category, COUNT(*) AS count FROM failures GROUP BY category`,
   ).all();
   const categoryBreakdown: Record<string, number> = {};
@@ -307,4 +321,32 @@ export function getOverviewStats(): OverviewStats {
     suppressionsSaved,
     categoryBreakdown,
   };
+}
+
+/**
+ * Returns overview stats from the given DB (used by hosted-mode per-repo routes).
+ * Alias of getOverviewStats(db) — provided for call-site clarity.
+ */
+export function getOverviewStatsFromDb(db: Database.Database): OverviewStats {
+  return getOverviewStats(db);
+}
+
+/**
+ * List all repos available in the given snapshot root by reading their manifest.json files.
+ * Returns an empty array if the root doesn't exist or has no valid manifests.
+ */
+export function listReposFromSnapshotRoot(snapshotRoot: string): SnapshotManifest[] {
+  const reposDir = path.join(snapshotRoot, 'repos');
+  if (!existsSync(reposDir)) return [];
+  const manifests: SnapshotManifest[] = [];
+  for (const repoId of readdirSync(reposDir)) {
+    const manifestPath = path.join(reposDir, repoId, 'manifest.json');
+    if (existsSync(manifestPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        manifests.push(raw as SnapshotManifest);
+      } catch { /* skip malformed manifests */ }
+    }
+  }
+  return manifests;
 }
