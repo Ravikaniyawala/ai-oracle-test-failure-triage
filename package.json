@@ -17,7 +17,9 @@
     "dashboard:build": "cd dashboard-ui && npm run build",
     "dashboard:ui": "cd dashboard-ui && npm run dev",
     "dashboard:dev-seed": "ORACLE_STATE_DB_PATH=./dev.db tsx src/dashboard-server.ts",
-    "db:seed": "ORACLE_STATE_DB_PATH=./dev.db npx tsx scripts/seed-dev-db.ts"
+    "db:seed": "ORACLE_STATE_DB_PATH=./dev.db npx tsx scripts/seed-dev-db.ts",
+    "eval:export": "tsx scripts/export-eval-dataset.ts",
+    "eval:score": "tsx scripts/score-eval-dataset.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
