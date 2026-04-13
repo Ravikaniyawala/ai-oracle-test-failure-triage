@@ -74,6 +74,15 @@ v1 uses three feedback types as evidence:
 | `retry_passed` | `gold_category = FLAKY`, `gold_should_block = false` | `high` | A test that passed on retry is flaky by definition |
 | `jira_closed_confirmed` | `gold_should_block = true`, `gold_category = null` | `medium` | Confirms the block decision was correct, but does not confirm the specific category |
 
+### Failure linkage rules
+
+Each exported case must link to a single, unambiguous failure row:
+
+- **With `feedback.pipeline_id`** (preferred): the exporter queries only the run for that pipeline. If no matching failure exists in that run, the row is skipped.
+- **Without `feedback.pipeline_id`** (legacy rows): the pattern must appear in exactly one run — any multi-run match is skipped, even when all runs produced the same category. This avoids silently exporting the wrong `pipeline_id` or `predicted_confidence`.
+
+The `case_id` field (`fb<feedback_row_id>:<hash_prefix>:<feedback_type>`) is unique per exported row and stable across re-exports.
+
 ### What is excluded in v1
 
 | Feedback type | Reason excluded |
@@ -81,7 +90,7 @@ v1 uses three feedback types as evidence:
 | `retry_failed` | Failure after retry may be REGRESSION, NEW_BUG, or ENV_ISSUE — cannot assign category safely |
 | `jira_closed_duplicate` | Confirms a Jira was filed, not that the classification or block was correct |
 | `action_overridden` | Too ambiguous — override may correct a bad action without correcting the classification |
-| Feedback rows not linkable to a single failure | `test_name` + `error_hash` must uniquely identify one failure row |
+| Feedback rows not linkable to a single failure | See linkage rules above |
 
 ---
 

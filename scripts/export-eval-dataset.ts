@@ -91,10 +91,10 @@ function deriveBlockFromCategory(category: string | null): boolean {
  * Strategy:
  * - If `pipelineId` is provided, anchor the lookup to that specific run.
  *   If no failure in that run matches test_name + error_hash, return null.
- * - If no `pipelineId`, fetch all matching failures across all runs.
- *   If two or more runs produced different categories for this pattern the
- *   feedback is ambiguous (we cannot know which prediction it refers to) —
- *   return null.  If they all agree, use the most recent row.
+ * - If no `pipelineId`, the pattern must appear in exactly one run — any
+ *   multi-run match is ambiguous (we cannot identify the original prediction
+ *   row, and different runs may have different pipeline_id or confidence).
+ *   Return null when more than one failure row matches.
  */
 function findFailure(
   db:         Database.Database,
@@ -123,31 +123,26 @@ function findFailure(
     };
   }
 
-  // Unanchored: fetch all matching failures and check for category ambiguity.
+  // Unanchored: require exactly one matching failure row.
+  // Multiple matches (even with the same category) are skipped — we cannot
+  // guarantee we are linking the feedback to the correct pipeline or confidence.
   const rows = db.prepare<[string, string], FailureRow & RunRow>(`
     SELECT f.id, f.run_id, f.test_name, f.error_hash, f.category, f.confidence,
            r.pipeline_id, r.repo_id, r.repo_name
     FROM   failures f
     JOIN   runs r ON r.id = f.run_id
     WHERE  f.test_name = ? AND f.error_hash = ?
-    ORDER  BY f.id DESC
+    LIMIT  2
   `).all(testName, errorHash);
 
-  if (rows.length === 0) return null;
+  const first = rows[0];
+  if (!first || rows.length > 1) return null;
 
-  // Skip if different runs produced different classifications — we cannot
-  // safely attribute the feedback to one specific prediction.
-  const firstCategory = rows[0].category;
-  for (const r of rows) {
-    if (r.category !== firstCategory) return null;
-  }
-
-  const row = rows[0];
   return {
-    failure: { id: row.id, run_id: row.run_id, test_name: row.test_name,
-               error_hash: row.error_hash, category: row.category, confidence: row.confidence },
-    run:     { id: row.run_id, pipeline_id: row.pipeline_id,
-               repo_id: row.repo_id ?? null, repo_name: row.repo_name ?? null },
+    failure: { id: first.id, run_id: first.run_id, test_name: first.test_name,
+               error_hash: first.error_hash, category: first.category, confidence: first.confidence },
+    run:     { id: first.run_id, pipeline_id: first.pipeline_id,
+               repo_id: first.repo_id ?? null, repo_name: first.repo_name ?? null },
   };
 }
 

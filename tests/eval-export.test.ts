@@ -169,19 +169,32 @@ describe('eval export — classification_corrected', () => {
     assert.ok((summary.skipReasons['classification_corrected:missing_test_or_hash'] ?? 0) >= 1);
   });
 
-  it('skips when unanchored and same test+hash produced different categories across runs', () => {
-    // Two runs, same test+hash, different Oracle categories — ambiguous without pipeline anchor
+  it('skips when unanchored and test+hash matches multiple runs (diverging categories)', () => {
+    // Two runs, same test+hash, different categories — ambiguous without pipeline anchor
     const run1 = insertRun(db, 'pipe-amb-1');
     const run2 = insertRun(db, 'pipe-amb-2');
     insertFailure(db, run1, 'Suite > ambiguous test', 'hashAMB', 'FLAKY',      0.7);
     insertFailure(db, run2, 'Suite > ambiguous test', 'hashAMB', 'REGRESSION', 0.9);
-    // Feedback with no pipeline_id — cannot anchor
     insertFeedback(db, 'classification_corrected', 'Suite > ambiguous test', 'hashAMB',
                    'FLAKY', 'REGRESSION', null);
 
     const { summary } = exportEvalCases(db);
     assert.ok((summary.skipReasons['classification_corrected:no_matching_failure'] ?? 0) >= 1,
-      'ambiguous unanchored lookup should be skipped');
+      'multi-run unanchored lookup should be skipped');
+  });
+
+  it('skips when unanchored and test+hash matches multiple runs (same category)', () => {
+    // Two runs, same test+hash, same category — still ambiguous: pipeline_id and confidence differ
+    const run3 = insertRun(db, 'pipe-amb-3');
+    const run4 = insertRun(db, 'pipe-amb-4');
+    insertFailure(db, run3, 'Suite > repeat test', 'hashREP', 'FLAKY', 0.7);
+    insertFailure(db, run4, 'Suite > repeat test', 'hashREP', 'FLAKY', 0.9);
+    insertFeedback(db, 'classification_corrected', 'Suite > repeat test', 'hashREP',
+                   'FLAKY', 'REGRESSION', null);
+
+    const { summary } = exportEvalCases(db);
+    assert.ok((summary.skipReasons['classification_corrected:no_matching_failure'] ?? 0) >= 1,
+      'same-category multi-run unanchored lookup should also be skipped');
   });
 });
 
