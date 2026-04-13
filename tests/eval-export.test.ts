@@ -183,6 +183,19 @@ describe('eval export — classification_corrected', () => {
       'multi-run unanchored lookup should be skipped');
   });
 
+  it('skips when anchored and run contains duplicate test_name+error_hash rows', () => {
+    // Same run, same test+hash, two failure rows — no uniqueness constraint prevents this
+    const runId = insertRun(db, 'pipe-dup-1');
+    insertFailure(db, runId, 'Suite > dup test', 'hashDUP', 'REGRESSION', 0.8);
+    insertFailure(db, runId, 'Suite > dup test', 'hashDUP', 'REGRESSION', 0.9);
+    insertFeedback(db, 'classification_corrected', 'Suite > dup test', 'hashDUP',
+                   'REGRESSION', 'NEW_BUG', 'pipe-dup-1');
+
+    const { summary } = exportEvalCases(db);
+    assert.ok((summary.skipReasons['classification_corrected:no_matching_failure'] ?? 0) >= 1,
+      'duplicate failure rows within the same run should be skipped');
+  });
+
   it('skips when unanchored and test+hash matches multiple runs (same category)', () => {
     // Two runs, same test+hash, same category — still ambiguous: pipeline_id and confidence differ
     const run3 = insertRun(db, 'pipe-amb-3');

@@ -104,22 +104,24 @@ function findFailure(
 ): { failure: FailureRow; run: RunRow } | null {
   if (pipelineId) {
     // Anchored: look only in the specific pipeline the feedback references.
-    const row = db.prepare<[string, string, string], FailureRow & RunRow>(`
+    // Fetch up to 2 rows — if the run contains duplicate test_name+error_hash
+    // entries the match is still ambiguous and we skip rather than pick one.
+    const rows = db.prepare<[string, string, string], FailureRow & RunRow>(`
       SELECT f.id, f.run_id, f.test_name, f.error_hash, f.category, f.confidence,
              r.pipeline_id, r.repo_id, r.repo_name
       FROM   failures f
       JOIN   runs r ON r.id = f.run_id
       WHERE  f.test_name = ? AND f.error_hash = ? AND r.pipeline_id = ?
-      ORDER  BY f.id DESC
-      LIMIT  1
-    `).get(testName, errorHash, pipelineId);
+      LIMIT  2
+    `).all(testName, errorHash, pipelineId);
 
-    if (!row) return null;
+    const first = rows[0];
+    if (!first || rows.length > 1) return null;
     return {
-      failure: { id: row.id, run_id: row.run_id, test_name: row.test_name,
-                 error_hash: row.error_hash, category: row.category, confidence: row.confidence },
-      run:     { id: row.run_id, pipeline_id: row.pipeline_id,
-                 repo_id: row.repo_id ?? null, repo_name: row.repo_name ?? null },
+      failure: { id: first.id, run_id: first.run_id, test_name: first.test_name,
+                 error_hash: first.error_hash, category: first.category, confidence: first.confidence },
+      run:     { id: first.run_id, pipeline_id: first.pipeline_id,
+                 repo_id: first.repo_id ?? null, repo_name: first.repo_name ?? null },
     };
   }
 

@@ -24,8 +24,8 @@ Each exported case is a JSONL line (`schema_version = 1`):
 ```jsonc
 {
   "schema_version": 1,           // always 1 in this version
-  "case_id": "fp:abc123ef:retry_passed",
-                                 // "<evidence>:<fingerprint_prefix>:<feedback_type>"
+  "case_id": "fb42:abc123ef:retry_passed",
+                                 // "fb<feedback_row_id>:<hash_prefix>:<feedback_type>"
   "repo_id":   "123456789",      // GitHub repository_id, nullable
   "repo_name": "org/repo",       // GitHub repository name, nullable
   "pipeline_id": "12345",        // CI run that produced the prediction
