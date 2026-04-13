@@ -27,7 +27,12 @@ on:
         type: boolean
         default: false
       triage-failure-mode:
-        description: 'fail-closed (default, blocks pipeline on Oracle error) or pass-through (exits 0, informational only)'
+        description: |
+          Controls pipeline behavior when Oracle itself fails (API error, parse error, etc.).
+          fail-closed  (default) — Oracle step exits 1; downstream deploy gates are blocked.
+          pass-through           — Oracle writes a DEGRADED verdict artifact and exits 0;
+                                   downstream deploy gates see verdict=CLEAR and are not blocked.
+                                   Use this when Oracle is informational-only.
         required: false
         type: string
         default: 'fail-closed'
@@ -246,17 +251,19 @@ jobs:
             const newBug   = v.NEW_BUG    || 0;
             const env      = v.ENV_ISSUE  || 0;
 
-            // DEGRADED means Oracle itself failed (e.g. API error, parse failure).
-            // In pass-through mode this should not block the downstream deploy gate,
-            // so map DEGRADED → CLEAR.  In fail-closed mode (default) treat it as
-            // BLOCKED to surface the problem.
+            // DEGRADED means Oracle itself failed (API error, parse failure, etc.).
+            // It is NOT a test classification result.
+            // Logic mirrors src/verdict-resolver.ts::resolveVerdict().
+            //   DEGRADED + pass-through  => CLEAR  (informational-only mode)
+            //   DEGRADED + fail-closed   => BLOCKED (safe default)
+            //   CLEAR / BLOCKED          => unchanged
             const failureMode = '${{ inputs.triage-failure-mode }}';
-            const verdict = (rawVerdict === 'DEGRADED' && failureMode === 'pass-through')
-              ? 'CLEAR'
-              : rawVerdict === 'DEGRADED' ? 'BLOCKED' : rawVerdict;
+            const verdict = rawVerdict === 'DEGRADED'
+              ? (failureMode === 'pass-through' ? 'CLEAR' : 'BLOCKED')
+              : (rawVerdict || 'BLOCKED');
 
             if (rawVerdict === 'DEGRADED') {
-              console.log('[oracle] triage run was DEGRADED (Oracle error). reason:', v.reason || 'unknown');
+              console.log('[oracle] triage run DEGRADED (Oracle error). reason:', v.reason || 'unknown');
               console.log('[oracle] failure-mode:', failureMode, '→ emitting verdict:', verdict);
             } else {
               console.log('[oracle] verdict:', verdict);
