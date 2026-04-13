@@ -134,8 +134,7 @@ pays approximately $1.30/month in API costs** — less than a coffee.
 > **Evaluation status:** accuracy numbers below come from synthetic test
 > fixtures (`fixtures/experiment/`) that were hand-crafted to represent each
 > category unambiguously.  They are a sanity-check on prompt quality, not a
-> measurement of real-world precision or recall.  No evaluation has been run
-> against a labelled production dataset.
+> measurement of real-world precision or recall.
 
 | Category | Observed confidence (synthetic fixtures) | Notes |
 |---|---|---|
@@ -152,6 +151,26 @@ above should be treated as a starting baseline, not a performance guarantee.
 Accuracy on *your* failures improves over time via the **instinct system** —
 patterns seen 3+ times with consistent classification (confidence > 0.7) are
 written to `.instincts/` and injected into the prompt on future runs.
+
+### Real evaluation against production history
+
+Oracle includes a production eval system that scores predictions against real
+operator feedback — no synthetic fixtures.  See **[`evals/README.md`](evals/README.md)**
+for the full dataset contract, metric definitions, and instructions.
+
+```bash
+# Export a labeled dataset from your state DB
+ORACLE_STATE_DB_PATH=~/.oracle/oracle-state.db \
+  npm run eval:export -- --output evals/dataset.jsonl
+
+# Score it
+npm run eval:score -- --input evals/dataset.jsonl
+```
+
+The dataset grows automatically as operators submit feedback (retry results,
+classification corrections, Jira outcomes).  No production benchmark numbers
+are published here because each team's dataset is private to their Oracle
+installation.
 
 ---
 
@@ -554,6 +573,12 @@ ORACLE_FEEDBACK_PATH=./feedback.json npm run triage
 
 # Process agent proposals from a JSON file
 ORACLE_AGENT_PROPOSALS_PATH=./proposals.json npm run triage
+
+# Export a labeled eval dataset from the state DB (JSONL, schema_version=1)
+ORACLE_STATE_DB_PATH=./oracle-state.db npm run eval:export -- --output evals/dataset.jsonl
+
+# Score the dataset and print metrics
+npm run eval:score -- --input evals/dataset.jsonl
 ```
 
 ### Local experiment
@@ -800,6 +825,10 @@ src/
   learn.ts                  — instinct generation script
 scripts/
   run-local-experiment.sh   — classification accuracy experiment against local fixtures
+  export-eval-dataset.ts    — export labeled eval dataset (JSONL) from SQLite feedback
+  score-eval-dataset.ts     — score an eval dataset and print block/category metrics
+evals/
+  README.md                 — eval contract: dataset format, metrics, limitations
 oracle-stage.yml            — GitLab CI stage (include this in consuming repos)
 .github/workflows/
   oracle-triage.yml         — reusable GitHub Actions workflow
