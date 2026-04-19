@@ -142,9 +142,20 @@ export function writeSummary(
   // ── Actions taken ─────────────────────────────────────────────────────────
   const actionLines: string[] = [];
   if (jirasCreated.length > 0) {
+    const totalAffected = jirasCreated.reduce((s, j) => s + (j.clusterSize ?? 1), 0);
+    const scopeSuffix =
+      totalAffected > jirasCreated.length
+        ? ` &nbsp;·&nbsp; covering **${totalAffected} test${totalAffected > 1 ? 's' : ''}**`
+        : '';
     actionLines.push(
       `🎫 **${jirasCreated.length} Jira${jirasCreated.length > 1 ? 's' : ''} created:** ` +
-      jirasCreated.map(j => `[\`${j.key}\`]`).join(' · '),
+      jirasCreated
+        .map(j => {
+          const size = j.clusterSize && j.clusterSize > 1 ? ` (${j.clusterSize} tests)` : '';
+          return `[\`${j.key}\`]${size}`;
+        })
+        .join(' · ') +
+      scopeSuffix,
     );
   }
   if (slackPosted) {

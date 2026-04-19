@@ -14,9 +14,20 @@
  * member so the rest of the pipeline can treat all Jira proposals uniformly.
  */
 import { createHash } from 'crypto';
-import { TriageCategory, type FailureCluster, type TriageResult } from './types.js';
+import { TriageCategory, type FailureCluster, type PatternStats, type TriageResult } from './types.js';
 
 // ── Cluster key computation ───────────────────────────────────────────────────
+
+/**
+ * Normalize a test file path to a stable identifier suitable for cluster keys.
+ * Strips directory prefixes, known test suffixes (.spec / .test), and lowercases.
+ * Returns an empty string if no useful basename is available.
+ */
+function fileStem(file: string): string {
+  if (!file) return '';
+  const base = file.split(/[\\/]/).pop() ?? '';
+  return base.replace(/\.(spec|test)\.[jt]sx?$/i, '').toLowerCase();
+}
 
 /**
  * Compute a stable cluster key for a single triaged failure.
@@ -26,12 +37,17 @@ export function computeClusterKey(result: TriageResult): string {
   const msg = result.errorMessage ?? '';
   const cat = result.category;
 
-  // 1. REGRESSION: HTTP 404 — taxonomy, routing, or deployment change
+  // 1. REGRESSION: HTTP 404 — possible routing, taxonomy, or deployment change.
+  //    Key includes the test-file stem so distinct feature areas (checkout,
+  //    category, login, …) stay in separate clusters — the old bare
+  //    `regression:http_404` over-merged unrelated defects into a single
+  //    misleading Jira.
   if (
     cat === TriageCategory.REGRESSION &&
     /Received:\s*404/.test(msg)
   ) {
-    return 'regression:http_404';
+    const stem = fileStem(result.file);
+    return stem ? `regression:http_404:${stem}` : 'regression:http_404:unknown';
   }
 
   // 2. ENV_ISSUE: authentication failures (401 / 403 / Unauthorized / Forbidden)
@@ -73,8 +89,10 @@ function buildJiraTitle(clusterKey: string, count: number, cat: TriageCategory):
   const label = `[${cat}]`;
   const n     = count === 1 ? '1 test' : `${count} tests`;
 
-  if (clusterKey === 'regression:http_404') {
-    return `${label} Category URL 404s — taxonomy or routing change (${n} affected)`;
+  if (clusterKey.startsWith('regression:http_404:')) {
+    const stem = clusterKey.slice('regression:http_404:'.length);
+    const area = stem === 'unknown' ? '' : ` in ${stem}`;
+    return `${label} HTTP 404s${area} — possible routing or taxonomy change (${n} affected)`;
   }
   if (clusterKey === 'env:auth_failure') {
     return `${label} Authentication failure (401/403) — test account unavailable (${n} affected)`;
@@ -95,8 +113,11 @@ function buildJiraBody(cluster: Pick<FailureCluster, 'clusterKey' | 'failures'>)
   const { clusterKey, failures } = cluster;
 
   const rootCause = (() => {
-    if (clusterKey === 'regression:http_404')
-      return 'Multiple category pages returned HTTP 404. This indicates a taxonomy restructure, slug change, or routing misconfiguration deployed to this environment.';
+    if (clusterKey.startsWith('regression:http_404:')) {
+      const stem = clusterKey.slice('regression:http_404:'.length);
+      const area = stem === 'unknown' ? 'multiple tests' : `tests in \`${stem}\``;
+      return `${area} returned HTTP 404 against this environment. Likely a routing, taxonomy, slug, or deployment change affecting that feature area — verify the URLs, fixtures, and any recent routing/CDN configuration.`;
+    }
     if (clusterKey === 'env:auth_failure')
       return 'The test account returned 401/403 during login. The test user credentials may be expired, rotated, or the account may have been disabled in this environment.';
     if (clusterKey.startsWith('env:timeout:')) {
@@ -195,4 +216,55 @@ export function clusterFailures(
 
   // Largest clusters first — most impactful tickets surface at the top
   return clusters.sort((a, b) => b.failures.length - a.failures.length);
+}
+
+// ── Cluster-level helpers (used by the index.ts orchestration) ───────────────
+
+/**
+ * Sum PatternStats across every member of a cluster so history-based
+ * suppression reflects the whole cluster, not a single representative.
+ *
+ * jiraDuplicateCount / jiraCreatedCount are counted per testName+errorHash,
+ * so summing is the correct aggregation for the "if ≥ half of past Jiras for
+ * this pattern were closed as duplicates, reject a new one" rule. Before this
+ * aggregation, cluster suppression depended entirely on whichever member
+ * happened to be cluster.failures[0] — arbitrary, and prone to both missing
+ * real duplicate evidence from other members and wrongly suppressing a new
+ * cluster based on one representative's history.
+ *
+ * Retry counters are summed too for consistency even though cluster-level
+ * create_jira does not currently use them.
+ */
+export function aggregateClusterStats(
+  cluster:         FailureCluster,
+  patternStatsMap: Map<string, PatternStats>,
+): PatternStats {
+  const agg: PatternStats = {
+    actionCount:        0,
+    jiraCreatedCount:   0,
+    jiraDuplicateCount: 0,
+    retryPassedCount:   0,
+    retryFailedCount:   0,
+  };
+  for (const f of cluster.failures) {
+    const s = patternStatsMap.get(`${f.testName}:${f.errorHash}`);
+    if (!s) continue;
+    agg.actionCount        += s.actionCount;
+    agg.jiraCreatedCount   += s.jiraCreatedCount;
+    agg.jiraDuplicateCount += s.jiraDuplicateCount;
+    agg.retryPassedCount   += s.retryPassedCount;
+    agg.retryFailedCount   += s.retryFailedCount;
+  }
+  return agg;
+}
+
+/**
+ * Strip the "[CATEGORY]" prefix and " (N tests affected)" suffix from the
+ * cluster's Jira title so Slack and the step summary can render a clean
+ * display label — the test count is carried separately via JiraCreated.clusterSize.
+ */
+export function clusterDisplayTitle(jiraTitle: string): string {
+  return jiraTitle
+    .replace(/^\[[A-Z_]+\]\s*/,                '')   // strip "[REGRESSION] "
+    .replace(/\s*\(\d+\s+tests?\s+affected\)$/, '');
 }

@@ -5,8 +5,13 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { clusterFailures, computeClusterKey } from '../src/failure-clusterer.js';
-import { TriageCategory, type TriageResult } from '../src/types.js';
+import {
+  aggregateClusterStats,
+  clusterDisplayTitle,
+  clusterFailures,
+  computeClusterKey,
+} from '../src/failure-clusterer.js';
+import { TriageCategory, type FailureCluster, type PatternStats, type TriageResult } from '../src/types.js';
 
 // ── Fixture builder ───────────────────────────────────────────────────────────
 
@@ -29,12 +34,40 @@ function makeResult(overrides: Partial<TriageResult> = {}): TriageResult {
 // ── computeClusterKey ─────────────────────────────────────────────────────────
 
 describe('computeClusterKey', () => {
-  it('groups REGRESSION + 404 → regression:http_404', () => {
+  it('groups REGRESSION + 404 → regression:http_404:<fileStem> using test file', () => {
     const r = makeResult({
       category:     TriageCategory.REGRESSION,
       errorMessage: 'expect(received).toBe(expected)\nExpected: 200\nReceived: 404',
+      file:         'tests/category-page.spec.ts',
     });
-    assert.equal(computeClusterKey(r), 'regression:http_404');
+    assert.equal(computeClusterKey(r), 'regression:http_404:category-page');
+  });
+
+  it('splits 404s from different test files into separate clusters (no over-merging)', () => {
+    const category = makeResult({
+      category:     TriageCategory.REGRESSION,
+      errorMessage: 'Expected: 200\nReceived: 404',
+      file:         'tests/category.spec.ts',
+    });
+    const checkout = makeResult({
+      category:     TriageCategory.REGRESSION,
+      errorMessage: 'Expected: 200\nReceived: 404',
+      file:         'tests/checkout.spec.ts',
+    });
+    assert.notEqual(
+      computeClusterKey(category),
+      computeClusterKey(checkout),
+      '404s from different features should not collapse into one cluster',
+    );
+  });
+
+  it('falls back to regression:http_404:unknown when file is empty', () => {
+    const r = makeResult({
+      category:     TriageCategory.REGRESSION,
+      errorMessage: 'Expected: 200\nReceived: 404',
+      file:         '',
+    });
+    assert.equal(computeClusterKey(r), 'regression:http_404:unknown');
   });
 
   it('does NOT cluster REGRESSION without 404 as regression:http_404', () => {
@@ -42,7 +75,7 @@ describe('computeClusterKey', () => {
       category:     TriageCategory.REGRESSION,
       errorMessage: 'Error: value mismatch\nExpected: foo\nReceived: bar',
     });
-    assert.notEqual(computeClusterKey(r), 'regression:http_404');
+    assert.ok(!computeClusterKey(r).startsWith('regression:http_404'));
   });
 
   it('groups ENV_ISSUE + 401 → env:auth_failure', () => {
@@ -101,22 +134,65 @@ describe('computeClusterKey', () => {
 // ── clusterFailures ───────────────────────────────────────────────────────────
 
 describe('clusterFailures', () => {
-  it('groups 19 HTTP-404 REGRESSION failures into one cluster', () => {
+  it('groups 19 HTTP-404 REGRESSION failures from the same test file into one cluster', () => {
     const failures = Array.from({ length: 19 }, (_, i) =>
       makeResult({
         testName:     `Suite > category test ${i}`,
         errorHash:    `hash${i}`,
         category:     TriageCategory.REGRESSION,
+        file:         'tests/category-page.spec.ts',
         errorMessage: `Error: page not found\nExpected: 200\nReceived: 404\nURL: /shop/category/dept${i}/sub`,
       }),
     );
     const ids = failures.map((_, i) => i + 1);
 
     const clusters = clusterFailures(failures, ids);
-    assert.equal(clusters.length, 1, 'all 404s should form one cluster');
-    assert.equal(clusters[0]?.clusterKey,        'regression:http_404');
+    assert.equal(clusters.length, 1, 'all 404s in the same file should form one cluster');
+    assert.equal(clusters[0]?.clusterKey,        'regression:http_404:category-page');
     assert.equal(clusters[0]?.failures.length,   19);
     assert.equal(clusters[0]?.failureIds.length, 19);
+  });
+
+  it('splits 404s from different test files into distinct clusters', () => {
+    const category = Array.from({ length: 3 }, (_, i) =>
+      makeResult({
+        testName:     `Category > test ${i}`,
+        errorHash:    `c${i}`,
+        category:     TriageCategory.REGRESSION,
+        file:         'tests/category.spec.ts',
+        errorMessage: 'Expected: 200\nReceived: 404',
+      }),
+    );
+    const checkout = Array.from({ length: 2 }, (_, i) =>
+      makeResult({
+        testName:     `Checkout > test ${i}`,
+        errorHash:    `k${i}`,
+        category:     TriageCategory.REGRESSION,
+        file:         'tests/checkout.spec.ts',
+        errorMessage: 'Expected: 200\nReceived: 404',
+      }),
+    );
+    const all = [...category, ...checkout];
+    const clusters = clusterFailures(all, all.map((_, i) => i + 1));
+    assert.equal(clusters.length, 2, 'different test files produce different clusters');
+    const keys = clusters.map(c => c.clusterKey).sort();
+    assert.deepEqual(keys, ['regression:http_404:category', 'regression:http_404:checkout']);
+  });
+
+  it('jiraTitle for http_404 includes the feature area and avoids misleading "category" wording', () => {
+    const failures = Array.from({ length: 2 }, (_, i) =>
+      makeResult({
+        testName:     `Checkout > test ${i}`,
+        errorHash:    `k${i}`,
+        category:     TriageCategory.REGRESSION,
+        file:         'tests/checkout.spec.ts',
+        errorMessage: 'Expected: 200\nReceived: 404',
+      }),
+    );
+    const [c] = clusterFailures(failures, [1, 2]);
+    assert.ok(c?.jiraTitle.includes('checkout'),     `title should include feature area: ${c?.jiraTitle}`);
+    assert.ok(!/Category URL 404s/i.test(c?.jiraTitle ?? ''),
+      'title must not hard-code the word "Category" — that was the over-merge bug');
   });
 
   it('groups auth+timeout ENV failures into separate clusters', () => {
@@ -144,8 +220,8 @@ describe('clusterFailures', () => {
   });
 
   it('handles mixed categories: 404 REGRESSION + auth ENV + solo NEW_BUG', () => {
-    const r404a = makeResult({ testName: 'Cat A', errorHash: 'r1', category: TriageCategory.REGRESSION, errorMessage: 'Expected: 200\nReceived: 404' });
-    const r404b = makeResult({ testName: 'Cat B', errorHash: 'r2', category: TriageCategory.REGRESSION, errorMessage: 'Expected: 200\nReceived: 404' });
+    const r404a = makeResult({ testName: 'Cat A', errorHash: 'r1', category: TriageCategory.REGRESSION, file: 'tests/example.spec.ts', errorMessage: 'Expected: 200\nReceived: 404' });
+    const r404b = makeResult({ testName: 'Cat B', errorHash: 'r2', category: TriageCategory.REGRESSION, file: 'tests/example.spec.ts', errorMessage: 'Expected: 200\nReceived: 404' });
     const auth  = makeResult({ testName: 'Login', errorHash: 'a1', category: TriageCategory.ENV_ISSUE,  errorMessage: 'Error: Login 401 Unauthorized' });
     const bug   = makeResult({ testName: 'New feature', errorHash: 'n1', category: TriageCategory.NEW_BUG, errorMessage: 'Error: checkout endpoint returned 500' });
 
@@ -153,8 +229,8 @@ describe('clusterFailures', () => {
     assert.equal(clusters.length, 3, 'expect 3 clusters: 404, auth, new_bug');
 
     const clustersByKey = Object.fromEntries(clusters.map(c => [c.clusterKey, c]));
-    assert.equal(clustersByKey['regression:http_404']?.failures.length, 2);
-    assert.equal(clustersByKey['env:auth_failure']?.failures.length,    1);
+    assert.equal(clustersByKey['regression:http_404:example']?.failures.length, 2);
+    assert.equal(clustersByKey['env:auth_failure']?.failures.length,            1);
   });
 
   it('solo failures each get their own cluster', () => {
@@ -208,5 +284,101 @@ describe('clusterFailures', () => {
   it('handles empty input gracefully', () => {
     const clusters = clusterFailures([], []);
     assert.equal(clusters.length, 0);
+  });
+});
+
+// ── aggregateClusterStats ─────────────────────────────────────────────────────
+
+function makeStats(overrides: Partial<PatternStats> = {}): PatternStats {
+  return {
+    actionCount:        0,
+    jiraCreatedCount:   0,
+    jiraDuplicateCount: 0,
+    retryPassedCount:   0,
+    retryFailedCount:   0,
+    ...overrides,
+  };
+}
+
+function makeCluster(failures: TriageResult[]): FailureCluster {
+  return {
+    clusterKey:  'test:cluster',
+    fingerprint: 'deadbeef12345678',
+    category:    TriageCategory.REGRESSION,
+    confidence:  0.85,
+    failures,
+    failureIds:  failures.map((_, i) => i + 1),
+    jiraTitle:   '[REGRESSION] test cluster (1 test affected)',
+    jiraBody:    'body',
+  };
+}
+
+describe('aggregateClusterStats', () => {
+  it('sums jira + retry counters across every cluster member', () => {
+    const f1 = makeResult({ testName: 'T1', errorHash: 'h1' });
+    const f2 = makeResult({ testName: 'T2', errorHash: 'h2' });
+    const f3 = makeResult({ testName: 'T3', errorHash: 'h3' });
+
+    const patternStatsMap = new Map<string, PatternStats>([
+      ['T1:h1', makeStats({ actionCount: 2, jiraCreatedCount: 3, jiraDuplicateCount: 1, retryPassedCount: 1 })],
+      ['T2:h2', makeStats({ actionCount: 1, jiraCreatedCount: 1, jiraDuplicateCount: 2, retryFailedCount: 2 })],
+      ['T3:h3', makeStats({ actionCount: 4, jiraCreatedCount: 0, jiraDuplicateCount: 0, retryPassedCount: 3 })],
+    ]);
+
+    const agg = aggregateClusterStats(makeCluster([f1, f2, f3]), patternStatsMap);
+    assert.equal(agg.actionCount,        2 + 1 + 4);
+    assert.equal(agg.jiraCreatedCount,   3 + 1);
+    assert.equal(agg.jiraDuplicateCount, 1 + 2);
+    assert.equal(agg.retryPassedCount,   1 + 3);
+    assert.equal(agg.retryFailedCount,   2);
+  });
+
+  it('returns zeros when no member has stats (cluster-wide aggregation safe on empty map)', () => {
+    const agg = aggregateClusterStats(
+      makeCluster([makeResult({ testName: 'X', errorHash: 'y' })]),
+      new Map(),
+    );
+    assert.equal(agg.actionCount,        0);
+    assert.equal(agg.jiraCreatedCount,   0);
+    assert.equal(agg.jiraDuplicateCount, 0);
+  });
+
+  it('does not over-suppress by picking arbitrary first member — a low-history member does not hide duplicate evidence elsewhere in the cluster', () => {
+    // Cluster has two members. First member has no history. A later member
+    // carries the duplicate evidence. With the old cluster.failures[0] lookup
+    // this cluster would appear clean; with aggregation the evidence surfaces.
+    const first = makeResult({ testName: 'First',      errorHash: 'h1' });
+    const later = makeResult({ testName: 'Late dupe',  errorHash: 'h2' });
+    const patternStatsMap = new Map<string, PatternStats>([
+      ['Late dupe:h2', makeStats({ jiraCreatedCount: 4, jiraDuplicateCount: 3 })],
+    ]);
+    const agg = aggregateClusterStats(makeCluster([first, later]), patternStatsMap);
+    assert.equal(agg.jiraCreatedCount,   4);
+    assert.equal(agg.jiraDuplicateCount, 3, 'aggregation should surface duplicate history from any cluster member');
+  });
+});
+
+// ── clusterDisplayTitle ───────────────────────────────────────────────────────
+
+describe('clusterDisplayTitle', () => {
+  it('strips the [CATEGORY] prefix and (N tests affected) suffix', () => {
+    assert.equal(
+      clusterDisplayTitle('[REGRESSION] HTTP 404s in checkout — possible routing or taxonomy change (24 tests affected)'),
+      'HTTP 404s in checkout — possible routing or taxonomy change',
+    );
+  });
+
+  it('works for singular (1 test)', () => {
+    assert.equal(
+      clusterDisplayTitle('[NEW_BUG] Something broke (1 test affected)'),
+      'Something broke',
+    );
+  });
+
+  it('leaves a title without prefix/suffix unchanged', () => {
+    assert.equal(
+      clusterDisplayTitle('A plain title'),
+      'A plain title',
+    );
   });
 });

@@ -23,7 +23,7 @@ import { loadInstincts } from './instinct-loader.js';
 import { writeSummary } from './summary-writer.js';
 import { postPrComment } from './pr-commenter.js';
 import { proposeFailureActions, proposeClusterActions, proposeRunActions, decide, decideAgentProposal } from './policy-engine.js';
-import { clusterFailures } from './failure-clusterer.js';
+import { aggregateClusterStats, clusterDisplayTitle, clusterFailures } from './failure-clusterer.js';
 import { detectCrossClusterSignals, formatSignals } from './cross-cluster-signals.js';
 import { ingestFeedback } from './feedback-processor.js';
 import { loadAgentProposals } from './agent-proposal-loader.js';
@@ -397,26 +397,26 @@ async function main(): Promise<void> {
 
     // 3.5. Propose + decide cluster-level Jira actions (one per root-cause cluster).
     for (const cluster of clusters) {
-      // Use aggregate pattern stats from the first failure in the cluster for
-      // history-influenced suppression (e.g. jira_duplicate_count).
-      const repResult = cluster.failures[0];
-      const repStats  = repResult
-        ? patternStatsMap.get(`${repResult.testName}:${repResult.errorHash}`)
-        : undefined;
+      // Aggregate pattern stats across ALL cluster members so suppression
+      // reflects the whole cluster's history, not a single representative
+      // failure. (jiraDuplicateCount / jiraCreatedCount are stored per
+      // testName+errorHash — summing is the correct aggregation for the
+      // "≥ half of past Jiras for this pattern were duplicates" rule.)
+      const clusterStats = aggregateClusterStats(cluster, patternStatsMap);
 
       for (const proposal of proposeClusterActions(cluster, runId, PIPELINE_ID)) {
         const jiraAlreadyCreated = wasJiraCreatedFor(proposal.fingerprint);
         const decision = decide(proposal, cluster.confidence, {
           jiraAlreadyCreated,
-          jiraDuplicateCount: repStats?.jiraDuplicateCount,
-          jiraCreatedCount:   repStats?.jiraCreatedCount,
+          jiraDuplicateCount: clusterStats.jiraDuplicateCount,
+          jiraCreatedCount:   clusterStats.jiraCreatedCount,
         });
         const inserted = saveAction(runId, proposal, decision);
         if (!inserted) {
           console.log(`[oracle] skipping duplicate cluster action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
           continue;
         }
-        const explanation = explainDecision(proposal.type, decision.verdict, decision.reason, repStats);
+        const explanation = explainDecision(proposal.type, decision.verdict, decision.reason, clusterStats);
         const clusterLabel = `cluster "${cluster.clusterKey}" (${cluster.failures.length} test(s))`;
         decisionLog.push({ actionType: proposal.type, verdict: decision.verdict, reason: decision.reason, testName: clusterLabel, explanation });
         if (isNotable(decision.verdict, decision.reason)) {
@@ -437,10 +437,15 @@ async function main(): Promise<void> {
             timestamp: new Date().toISOString(),
           });
           if (jiraResult !== null && !jiraResult.wasExisting) {
-            // Surface each affected test in jiraCreated so Slack/summary shows scope
-            for (const f of cluster.failures) {
-              jiraCreated.push({ testName: f.testName, category: cluster.category, key: jiraResult.key });
-            }
+            // One cluster Jira → one JiraCreated entry (not one per member).
+            // Scope is conveyed via clusterSize so Slack/summary render
+            // "N tests" accurately instead of inflating the Jira count.
+            jiraCreated.push({
+              testName:    clusterDisplayTitle(cluster.jiraTitle),
+              category:    cluster.category,
+              key:         jiraResult.key,
+              clusterSize: cluster.failures.length,
+            });
           }
         }
       }

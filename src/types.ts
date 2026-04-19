@@ -120,9 +120,16 @@ export interface ActionExecution {
 }
 
 export interface JiraCreated {
+  /** Display label — for cluster-sourced Jiras this is the human-readable
+   *  cluster title (not a single test name). Kept as `testName` for
+   *  backwards compatibility with the original per-failure Jira flow. */
   testName: string;
   category: TriageCategory;
   key:      string;
+  /** Number of failing tests covered by this Jira. 1 for per-failure Jiras;
+   *  >1 when the Jira was raised for a cluster. Used by Slack/summary to
+   *  show "[KEY] title (N tests)" accurately. Absent or 1 → single test. */
+  clusterSize?: number;
 }
 
 // ── History / explainability types ───────────────────────────────────────────
