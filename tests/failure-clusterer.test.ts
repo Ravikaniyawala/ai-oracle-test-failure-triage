@@ -365,18 +365,20 @@ function makeCluster(failures: TriageResult[]): FailureCluster {
 }
 
 describe('aggregateClusterStats', () => {
+  const zeroCluster = makeStats();
+
   it('sums jira + retry counters across every cluster member', () => {
     const f1 = makeResult({ testName: 'T1', errorHash: 'h1' });
     const f2 = makeResult({ testName: 'T2', errorHash: 'h2' });
     const f3 = makeResult({ testName: 'T3', errorHash: 'h3' });
 
-    const patternStatsMap = new Map<string, PatternStats>([
+    const perFailureStatsMap = new Map<string, PatternStats>([
       ['T1:h1', makeStats({ actionCount: 2, jiraCreatedCount: 3, jiraDuplicateCount: 1, retryPassedCount: 1 })],
       ['T2:h2', makeStats({ actionCount: 1, jiraCreatedCount: 1, jiraDuplicateCount: 2, retryFailedCount: 2 })],
       ['T3:h3', makeStats({ actionCount: 4, jiraCreatedCount: 0, jiraDuplicateCount: 0, retryPassedCount: 3 })],
     ]);
 
-    const agg = aggregateClusterStats(makeCluster([f1, f2, f3]), patternStatsMap);
+    const agg = aggregateClusterStats(makeCluster([f1, f2, f3]), perFailureStatsMap, zeroCluster);
     assert.equal(agg.actionCount,        2 + 1 + 4);
     assert.equal(agg.jiraCreatedCount,   3 + 1);
     assert.equal(agg.jiraDuplicateCount, 1 + 2);
@@ -384,10 +386,11 @@ describe('aggregateClusterStats', () => {
     assert.equal(agg.retryFailedCount,   2);
   });
 
-  it('returns zeros when no member has stats (cluster-wide aggregation safe on empty map)', () => {
+  it('returns zeros when no member has stats and cluster history is zero', () => {
     const agg = aggregateClusterStats(
       makeCluster([makeResult({ testName: 'X', errorHash: 'y' })]),
       new Map(),
+      zeroCluster,
     );
     assert.equal(agg.actionCount,        0);
     assert.equal(agg.jiraCreatedCount,   0);
@@ -400,12 +403,74 @@ describe('aggregateClusterStats', () => {
     // this cluster would appear clean; with aggregation the evidence surfaces.
     const first = makeResult({ testName: 'First',      errorHash: 'h1' });
     const later = makeResult({ testName: 'Late dupe',  errorHash: 'h2' });
-    const patternStatsMap = new Map<string, PatternStats>([
+    const perFailureStatsMap = new Map<string, PatternStats>([
       ['Late dupe:h2', makeStats({ jiraCreatedCount: 4, jiraDuplicateCount: 3 })],
     ]);
-    const agg = aggregateClusterStats(makeCluster([first, later]), patternStatsMap);
+    const agg = aggregateClusterStats(makeCluster([first, later]), perFailureStatsMap, zeroCluster);
     assert.equal(agg.jiraCreatedCount,   4);
     assert.equal(agg.jiraDuplicateCount, 3, 'aggregation should surface duplicate history from any cluster member');
+  });
+
+  it('adds cluster-level history exactly once, not once per member', () => {
+    // Regression test for the P1 double-count flagged by Codex review:
+    //   cluster-aware getPatternStats credited each member with the same
+    //   historical cluster Jira; the old aggregator then summed those
+    //   N copies, tripping history:duplicate_pattern suppression after a
+    //   single prior duplicate cluster ticket.
+    //
+    // With the split, per-failure stats stay per-failure (no cluster rows),
+    // and the cluster-level stats contribute exactly once.
+    const f1 = makeResult({ testName: 'T1', errorHash: 'h1' });
+    const f2 = makeResult({ testName: 'T2', errorHash: 'h2' });
+    const f3 = makeResult({ testName: 'T3', errorHash: 'h3' });
+
+    // Per-failure-only stats — no cluster rows attributed to members.
+    const perFailureStatsMap = new Map<string, PatternStats>([
+      ['T1:h1', makeStats()],
+      ['T2:h2', makeStats()],
+      ['T3:h3', makeStats()],
+    ]);
+
+    // One historical cluster Jira that was closed as duplicate.
+    const clusterHistoryStats = makeStats({
+      actionCount:        1,
+      jiraCreatedCount:   1,
+      jiraDuplicateCount: 1,
+    });
+
+    const agg = aggregateClusterStats(
+      makeCluster([f1, f2, f3]),
+      perFailureStatsMap,
+      clusterHistoryStats,
+    );
+    assert.equal(agg.actionCount,        1, 'cluster action must be counted once, not once per member');
+    assert.equal(agg.jiraCreatedCount,   1, 'cluster Jira create must be counted once, not once per member');
+    assert.equal(agg.jiraDuplicateCount, 1, 'cluster duplicate closure must be counted once, not once per member');
+  });
+
+  it('combines per-failure history with cluster-level history without over-counting either stream', () => {
+    const f1 = makeResult({ testName: 'T1', errorHash: 'h1' });
+    const f2 = makeResult({ testName: 'T2', errorHash: 'h2' });
+
+    // Each member has its own per-failure history (e.g. was individually Jira'd
+    // in a prior run before the clusterer existed).
+    const perFailureStatsMap = new Map<string, PatternStats>([
+      ['T1:h1', makeStats({ jiraCreatedCount: 1, jiraDuplicateCount: 0 })],
+      ['T2:h2', makeStats({ jiraCreatedCount: 1, jiraDuplicateCount: 1 })],
+    ]);
+    const clusterHistoryStats = makeStats({
+      jiraCreatedCount:   2,
+      jiraDuplicateCount: 1,
+    });
+
+    const agg = aggregateClusterStats(
+      makeCluster([f1, f2]),
+      perFailureStatsMap,
+      clusterHistoryStats,
+    );
+    // Per-failure sum (1+1) + cluster once (2) = 4 — no member-count inflation.
+    assert.equal(agg.jiraCreatedCount,   1 + 1 + 2);
+    assert.equal(agg.jiraDuplicateCount, 0 + 1 + 1);
   });
 });
 

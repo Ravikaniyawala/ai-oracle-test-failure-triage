@@ -254,30 +254,42 @@ export function clusterFailures(
  * Sum PatternStats across every member of a cluster so history-based
  * suppression reflects the whole cluster, not a single representative.
  *
- * jiraDuplicateCount / jiraCreatedCount are counted per testName+errorHash,
- * so summing is the correct aggregation for the "if ≥ half of past Jiras for
- * this pattern were closed as duplicates, reject a new one" rule. Before this
- * aggregation, cluster suppression depended entirely on whichever member
- * happened to be cluster.failures[0] — arbitrary, and prone to both missing
- * real duplicate evidence from other members and wrongly suppressing a new
- * cluster based on one representative's history.
+ * Inputs are split into two streams so cluster-level history is counted ONCE,
+ * not once per member:
+ *
+ *   - `perFailureStatsMap` — per-failure-only stats, keyed by "<test>:<hash>".
+ *     Callers MUST build this with `getPatternStats(test, hash,
+ *     { includeClusterScoped: false })`. If cluster-aware stats are passed
+ *     here, any historical cluster Jira attributed to N members will be
+ *     counted N× after summing, tripping history-based suppression sooner
+ *     than documented.
+ *
+ *   - `clusterHistoryStats` — cluster-level history for this cluster's
+ *     `clusterKey`, obtained from `getClusterHistoryStats(clusterKey)`.
+ *     Added to the sum exactly once.
+ *
+ * Before this split, cluster suppression either depended on whichever member
+ * happened to be `cluster.failures[0]` (pre-aggregation), or double-counted
+ * cluster history (cluster-aware map + naive sum).
  *
  * Retry counters are summed too for consistency even though cluster-level
- * create_jira does not currently use them.
+ * create_jira does not currently use them — cluster history contributes 0
+ * retry counts since retry feedback is per-test only.
  */
 export function aggregateClusterStats(
-  cluster:         FailureCluster,
-  patternStatsMap: Map<string, PatternStats>,
+  cluster:             FailureCluster,
+  perFailureStatsMap:  Map<string, PatternStats>,
+  clusterHistoryStats: PatternStats,
 ): PatternStats {
   const agg: PatternStats = {
-    actionCount:        0,
-    jiraCreatedCount:   0,
-    jiraDuplicateCount: 0,
-    retryPassedCount:   0,
-    retryFailedCount:   0,
+    actionCount:        clusterHistoryStats.actionCount,
+    jiraCreatedCount:   clusterHistoryStats.jiraCreatedCount,
+    jiraDuplicateCount: clusterHistoryStats.jiraDuplicateCount,
+    retryPassedCount:   clusterHistoryStats.retryPassedCount,
+    retryFailedCount:   clusterHistoryStats.retryFailedCount,
   };
   for (const f of cluster.failures) {
-    const s = patternStatsMap.get(`${f.testName}:${f.errorHash}`);
+    const s = perFailureStatsMap.get(`${f.testName}:${f.errorHash}`);
     if (!s) continue;
     agg.actionCount        += s.actionCount;
     agg.jiraCreatedCount   += s.jiraCreatedCount;

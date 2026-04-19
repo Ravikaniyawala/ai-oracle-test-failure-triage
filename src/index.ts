@@ -15,6 +15,7 @@ import {
   saveAgentProposal,
   updateAgentProposalStatus,
   getPatternStats,
+  getClusterHistoryStats,
   savePrContext,
 } from './state-store.js';
 import { createClusterJiraDefect } from './jira-writer.js';
@@ -400,13 +401,25 @@ async function main(): Promise<void> {
     }
 
     // 3.5. Propose + decide cluster-level Jira actions (one per root-cause cluster).
+    //
+    // Cluster-level suppression needs the whole cluster's history, not a single
+    // representative — but the aggregation has to avoid double-counting
+    // cluster-scoped rows. `patternStatsMap` is cluster-aware (each member
+    // sees the same cluster Jira in its own history), so summing it would
+    // multiply cluster rows by member count. Instead we build a parallel
+    // `perFailureStatsMap` with `includeClusterScoped: false`, then add the
+    // cluster's own history exactly once via `getClusterHistoryStats`.
+    const perFailureStatsMap = new Map<string, PatternStats>();
+    for (const result of results) {
+      perFailureStatsMap.set(
+        `${result.testName}:${result.errorHash}`,
+        getPatternStats(result.testName, result.errorHash, { includeClusterScoped: false }),
+      );
+    }
+
     for (const cluster of clusters) {
-      // Aggregate pattern stats across ALL cluster members so suppression
-      // reflects the whole cluster's history, not a single representative
-      // failure. (jiraDuplicateCount / jiraCreatedCount are stored per
-      // testName+errorHash — summing is the correct aggregation for the
-      // "≥ half of past Jiras for this pattern were duplicates" rule.)
-      const clusterStats = aggregateClusterStats(cluster, patternStatsMap);
+      const clusterHistoryStats = getClusterHistoryStats(cluster.clusterKey);
+      const clusterStats        = aggregateClusterStats(cluster, perFailureStatsMap, clusterHistoryStats);
 
       for (const proposal of proposeClusterActions(cluster, runId, PIPELINE_ID)) {
         const jiraAlreadyCreated = wasJiraCreatedFor(proposal.fingerprint);

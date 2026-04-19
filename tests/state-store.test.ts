@@ -11,17 +11,19 @@ mkdirSync(tmp, { recursive: true });
 
 process.env['ORACLE_STATE_DB_PATH'] = DB;
 
-type GetRecentFn     = (testName: string, errorHash: string, lookback?: number) => RecentFailurePattern | undefined;
-type SaveRunFn       = (pipelineId: string, totalFailures: number, results: never[], verdict: 'CLEAR' | 'BLOCKED') => number;
-type SaveActionFn    = (runId: number, proposal: ActionProposal, decision: Decision) => boolean;
-type RecordExecFn    = (runId: number, fingerprint: string, exec: { ok: boolean; detail: string; timestamp: string }) => void;
-type GetPatternFn    = (testName: string, errorHash: string) => PatternStats;
+type GetRecentFn         = (testName: string, errorHash: string, lookback?: number) => RecentFailurePattern | undefined;
+type SaveRunFn           = (pipelineId: string, totalFailures: number, results: never[], verdict: 'CLEAR' | 'BLOCKED') => number;
+type SaveActionFn        = (runId: number, proposal: ActionProposal, decision: Decision) => boolean;
+type RecordExecFn        = (runId: number, fingerprint: string, exec: { ok: boolean; detail: string; timestamp: string }) => void;
+type GetPatternFn        = (testName: string, errorHash: string, options?: { includeClusterScoped?: boolean }) => PatternStats;
+type GetClusterHistoryFn = (clusterKey: string) => PatternStats;
 
-let getRecentFailurePattern: GetRecentFn    | null = null;
-let saveRun:                 SaveRunFn      | null = null;
-let saveAction:              SaveActionFn   | null = null;
-let recordActionExecution:   RecordExecFn   | null = null;
-let getPatternStats:         GetPatternFn   | null = null;
+let getRecentFailurePattern: GetRecentFn         | null = null;
+let saveRun:                 SaveRunFn           | null = null;
+let saveAction:              SaveActionFn        | null = null;
+let recordActionExecution:   RecordExecFn        | null = null;
+let getPatternStats:         GetPatternFn        | null = null;
+let getClusterHistoryStats:  GetClusterHistoryFn | null = null;
 let getDb: (() => import('better-sqlite3').Database) | null = null;
 let dbAvailable = false;
 
@@ -33,6 +35,7 @@ try {
   saveAction              = store.saveAction;
   recordActionExecution   = store.recordActionExecution;
   getPatternStats         = store.getPatternStats;
+  getClusterHistoryStats  = store.getClusterHistoryStats;
   getDb                   = store.getDb;
   dbAvailable             = true;
 } catch {
@@ -223,5 +226,185 @@ describeMaybe('getPatternStats — cluster-aware history', () => {
     const stats = getPatternStats!('X', 'xh');
     assert.equal(stats.actionCount,      1, 'proposal still counted in actionCount');
     assert.equal(stats.jiraCreatedCount, 0, 'but failed exec must not bump jiraCreatedCount');
+  });
+});
+
+// ── getPatternStats — per-failure-only mode ───────────────────────────────────
+//
+// The cluster-aware fix surfaces cluster Jiras to every member. When the
+// aggregator then sums across N members it multiplies one cluster Jira by
+// N. `includeClusterScoped: false` gives the aggregator a stream that
+// deliberately excludes cluster rows so cluster-level history can be added
+// once via getClusterHistoryStats without double-counting.
+
+describeMaybe('getPatternStats — includeClusterScoped: false', () => {
+  function clusterProposal(
+    runId:      number,
+    clusterKey: string,
+    members:    Array<{ testName: string; errorHash: string }>,
+  ): ActionProposal {
+    return {
+      type:        'create_jira',
+      scope:       'cluster',
+      scopeId:     clusterKey,
+      failureId:   null,
+      clusterKey,
+      runId,
+      pipelineId:     'pipe-per-failure',
+      source:         'policy',
+      fingerprint:    `fp-pf-${clusterKey}`,
+      clusterMembers: members,
+    };
+  }
+  const approved = (proposal: ActionProposal): Decision => ({
+    proposal, verdict: 'approved', confidence: 0.9, reason: 'policy:auto-approved',
+  });
+
+  it('hides cluster-scoped rows that cluster-aware mode would surface', () => {
+    const runId = saveRun!('pipe-per-failure-hide', 0, [], 'CLEAR');
+    const members = [
+      { testName: 'PF > a', errorHash: 'ph1' },
+      { testName: 'PF > b', errorHash: 'ph2' },
+    ];
+    const proposal = clusterProposal(runId, 'regression:http_404:pf', members);
+    saveAction!(runId, proposal, approved(proposal));
+    recordActionExecution!(runId, proposal.fingerprint, {
+      ok: true, detail: 'created QA-9001', timestamp: new Date().toISOString(),
+    });
+
+    // Default (cluster-aware) — member sees the cluster Jira.
+    const awareStats = getPatternStats!('PF > a', 'ph1');
+    assert.equal(awareStats.actionCount,      1);
+    assert.equal(awareStats.jiraCreatedCount, 1);
+
+    // Per-failure-only — member does NOT see the cluster Jira.
+    const perFailureStats = getPatternStats!('PF > a', 'ph1', { includeClusterScoped: false });
+    assert.equal(perFailureStats.actionCount,      0, 'per-failure-only must exclude cluster rows');
+    assert.equal(perFailureStats.jiraCreatedCount, 0);
+  });
+
+  it('still counts per-failure rows scoped exactly to this test+hash', () => {
+    const runId = saveRun!('pipe-per-failure-exact', 0, [], 'CLEAR');
+    // A per-failure-scoped action — scopeId = "<test>:<hash>".
+    const perFailureProposal: ActionProposal = {
+      type:        'create_jira',
+      scope:       'failure',
+      scopeId:     'PF > exact:exh',
+      failureId:   null,
+      clusterKey:  null,
+      runId,
+      pipelineId:  'pipe-per-failure-exact',
+      source:      'policy',
+      fingerprint: 'fp-pf-exact',
+    };
+    saveAction!(runId, perFailureProposal, approved(perFailureProposal));
+    recordActionExecution!(runId, perFailureProposal.fingerprint, {
+      ok: true, detail: 'created QA-9002', timestamp: new Date().toISOString(),
+    });
+
+    const stats = getPatternStats!('PF > exact', 'exh', { includeClusterScoped: false });
+    assert.equal(stats.actionCount,      1, 'per-failure rows must still be counted');
+    assert.equal(stats.jiraCreatedCount, 1);
+  });
+});
+
+// ── getClusterHistoryStats — cluster-key-scoped history ───────────────────────
+//
+// Returns stats for actions whose scopeId = clusterKey. Intended for
+// aggregateClusterStats to add cluster-level history exactly once after
+// summing per-failure-only stats across cluster members.
+
+describeMaybe('getClusterHistoryStats', () => {
+  function clusterProposal(
+    runId:      number,
+    clusterKey: string,
+    fingerprint: string,
+    members:    Array<{ testName: string; errorHash: string }>,
+  ): ActionProposal {
+    return {
+      type:        'create_jira',
+      scope:       'cluster',
+      scopeId:     clusterKey,
+      failureId:   null,
+      clusterKey,
+      runId,
+      pipelineId:     'pipe-cluster-history',
+      source:         'policy',
+      fingerprint,
+      clusterMembers: members,
+    };
+  }
+  const approved = (proposal: ActionProposal): Decision => ({
+    proposal, verdict: 'approved', confidence: 0.9, reason: 'policy:auto-approved',
+  });
+
+  it('returns zeros when the cluster has no prior history', () => {
+    const stats = getClusterHistoryStats!('regression:http_404:nonexistent');
+    assert.equal(stats.actionCount,      0);
+    assert.equal(stats.jiraCreatedCount, 0);
+    assert.equal(stats.jiraDuplicateCount, 0);
+  });
+
+  it('surfaces one cluster action as count=1 regardless of member count', () => {
+    const runId = saveRun!('pipe-cluster-once', 0, [], 'CLEAR');
+    const clusterKey = 'regression:http_404:once';
+    const members = [
+      { testName: 'T1', errorHash: 'h1' },
+      { testName: 'T2', errorHash: 'h2' },
+      { testName: 'T3', errorHash: 'h3' },
+    ];
+    const proposal = clusterProposal(runId, clusterKey, `fp-once-${clusterKey}`, members);
+    saveAction!(runId, proposal, approved(proposal));
+    recordActionExecution!(runId, proposal.fingerprint, {
+      ok: true, detail: 'created QA-7001', timestamp: new Date().toISOString(),
+    });
+
+    const stats = getClusterHistoryStats!(clusterKey);
+    assert.equal(stats.actionCount,      1, '3-member cluster Jira still counts as 1 cluster row');
+    assert.equal(stats.jiraCreatedCount, 1);
+  });
+
+  it('failed cluster Jira execution does NOT bump jiraCreatedCount', () => {
+    const runId = saveRun!('pipe-cluster-fail-hist', 0, [], 'CLEAR');
+    const clusterKey = 'regression:http_404:fail';
+    const proposal = clusterProposal(runId, clusterKey, 'fp-fail-cluster-hist', [
+      { testName: 'TF', errorHash: 'fh' },
+    ]);
+    saveAction!(runId, proposal, approved(proposal));
+    recordActionExecution!(runId, proposal.fingerprint, {
+      ok: false, detail: 'jira api 500', timestamp: new Date().toISOString(),
+    });
+
+    const stats = getClusterHistoryStats!(clusterKey);
+    assert.equal(stats.actionCount,      1, 'proposal still counted');
+    assert.equal(stats.jiraCreatedCount, 0, 'failed exec must not bump createdCount');
+  });
+
+  it('does not pick up per-failure rows (scope separation)', () => {
+    const runId = saveRun!('pipe-cluster-scope-split', 0, [], 'CLEAR');
+    // A per-failure proposal whose scopeId happens to look distinct from any
+    // clusterKey. getClusterHistoryStats must not match it.
+    const perFailureProposal: ActionProposal = {
+      type:        'create_jira',
+      scope:       'failure',
+      scopeId:     'SomeTest:someHash',
+      failureId:   null,
+      clusterKey:  null,
+      runId,
+      pipelineId:  'pipe-cluster-scope-split',
+      source:      'policy',
+      fingerprint: 'fp-scope-split',
+    };
+    saveAction!(runId, perFailureProposal, approved(perFailureProposal));
+    recordActionExecution!(runId, perFailureProposal.fingerprint, {
+      ok: true, detail: 'created QA-7002', timestamp: new Date().toISOString(),
+    });
+
+    // Querying with that same scopeId as a "clusterKey" would technically
+    // match (it's just a string), so we query a DIFFERENT key to prove
+    // separation — nothing matches.
+    const stats = getClusterHistoryStats!('regression:http_404:unrelated');
+    assert.equal(stats.actionCount,      0, 'per-failure rows must not leak into unrelated clusterKey stats');
+    assert.equal(stats.jiraCreatedCount, 0);
   });
 });
