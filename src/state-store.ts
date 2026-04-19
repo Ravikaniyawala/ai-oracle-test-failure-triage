@@ -329,13 +329,21 @@ export function updateAgentProposalStatus(
 /**
  * Compute historical pattern stats for a failure identified by testName + errorHash.
  *
- * actionCount        — total action rows recorded for this testName:errorHash pair
- * jiraCreatedCount   — create_jira actions that executed successfully
+ * actionCount        — total action rows recorded for this testName:errorHash pair,
+ *                      PLUS cluster-scoped actions whose clusterMembers contained
+ *                      this (testName, errorHash)
+ * jiraCreatedCount   — create_jira actions that executed successfully, including
+ *                      cluster-scoped Jiras where this failure was a member
  * jiraDuplicateCount — distinct feedback rows marked jira_closed_duplicate,
  *                      matched by test_name+error_hash OR by action_fingerprint
- *                      of any action associated with this pattern
+ *                      of any action (per-failure OR cluster) linked to this pattern
  * retryPassedCount   — feedback rows marked retry_passed for this pattern
  * retryFailedCount   — feedback rows marked retry_failed for this pattern
+ *
+ * Cluster-aware history: prior to this, `scopeId` lookups saw only per-failure
+ * actions. Now that clustered Jira proposals persist `scopeId = <clusterKey>`
+ * and `payload_json.clusterMembers[]`, we OR in a json_each match against that
+ * array so cluster-level tickets still contribute to per-member history.
  *
  * Slice 3.1: used for explainability logging and oracle-verdict.json output.
  * Slice 3.2: jiraDuplicateCount/jiraCreatedCount and retryPassedCount/retryFailedCount
@@ -344,17 +352,33 @@ export function updateAgentProposalStatus(
 export function getPatternStats(testName: string, errorHash: string): PatternStats {
   const scopeId = `${testName}:${errorHash}`;
 
+  // A row counts as "linked to this pattern" if EITHER:
+  //   (a) its scopeId is the per-failure scopeId "<testName>:<errorHash>", OR
+  //   (b) it is a cluster action whose payload_json.clusterMembers contains
+  //       an entry matching this (testName, errorHash).
+  //
+  // (b) is expressed with EXISTS + json_each so a failure that belonged to a
+  // cluster in a prior run still sees that cluster's Jira history.
+  const linkedClause = `(
+       json_extract(payload_json, '$.scopeId') = @scopeId
+    OR EXISTS (
+         SELECT 1
+         FROM json_each(json_extract(payload_json, '$.clusterMembers')) AS m
+         WHERE json_extract(m.value, '$.testName')  = @testName
+           AND json_extract(m.value, '$.errorHash') = @errorHash
+       )
+  )`;
+
   const actionCount = (db.prepare(
-    `SELECT COUNT(*) as count FROM actions
-     WHERE json_extract(payload_json, '$.scopeId') = ?`,
-  ).get(scopeId) as { count: number }).count;
+    `SELECT COUNT(*) as count FROM actions WHERE ${linkedClause}`,
+  ).get({ scopeId, testName, errorHash }) as { count: number }).count;
 
   const jiraCreatedCount = (db.prepare(
     `SELECT COUNT(*) as count FROM actions
      WHERE action_type = 'create_jira'
        AND execution_ok = 1
-       AND json_extract(payload_json, '$.scopeId') = ?`,
-  ).get(scopeId) as { count: number }).count;
+       AND ${linkedClause}`,
+  ).get({ scopeId, testName, errorHash }) as { count: number }).count;
 
   // COUNT(DISTINCT id) prevents double-counting if a feedback row matches both
   // the test_name+error_hash condition and the action_fingerprint subquery.
@@ -363,13 +387,12 @@ export function getPatternStats(testName: string, errorHash: string): PatternSta
      FROM feedback f
      WHERE f.feedback_type = 'jira_closed_duplicate'
        AND (
-         (f.test_name = ? AND f.error_hash = ?)
+         (f.test_name = @testName AND f.error_hash = @errorHash)
          OR f.action_fingerprint IN (
-           SELECT action_fingerprint FROM actions
-           WHERE json_extract(payload_json, '$.scopeId') = ?
+           SELECT action_fingerprint FROM actions WHERE ${linkedClause}
          )
        )`,
-  ).get(testName, errorHash, scopeId) as { count: number }).count;
+  ).get({ scopeId, testName, errorHash }) as { count: number }).count;
 
   const retryPassedCount = (db.prepare(
     `SELECT COUNT(*) as count FROM feedback

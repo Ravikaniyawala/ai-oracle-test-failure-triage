@@ -104,6 +104,15 @@ export interface ActionProposal {
   pipelineId:  string;
   source:      'policy' | 'agent';
   fingerprint: string;
+  /**
+   * For scope='cluster' proposals, the (testName, errorHash) pairs of every
+   * failure that belonged to the cluster when the proposal was emitted.
+   * Persisted into actions.payload_json so that getPatternStats() can surface
+   * cluster-level Jira history per member on later runs — otherwise the
+   * cluster-scoped scopeId (`<clusterKey>`) would be invisible to the
+   * per-failure `<testName>:<errorHash>` scopeId lookup.
+   */
+  clusterMembers?: Array<{ testName: string; errorHash: string }>;
 }
 
 export interface Decision {

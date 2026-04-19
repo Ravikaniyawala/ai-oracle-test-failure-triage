@@ -159,6 +159,49 @@ function buildJiraBody(cluster: Pick<FailureCluster, 'clusterKey' | 'failures'>)
  * @returns One FailureCluster per distinct root cause, sorted by descending
  *          cluster size (largest first so the most impactful tickets surface).
  */
+
+/**
+ * Dominant category for a set of cluster members.
+ *
+ * Contract: most-frequent member category wins. Severity order
+ * (NEW_BUG > REGRESSION > ENV_ISSUE > FLAKY) is used ONLY as a tie-break.
+ *
+ * This matters because cluster category drives Jira eligibility: a mostly-FLAKY
+ * cluster should not be escalated to REGRESSION/NEW_BUG by a single noisy
+ * member. The previous implementation walked the severity list and picked the
+ * first bucket with any members at all, which had exactly that failure mode.
+ *
+ * Exported for direct test coverage — the cluster-key rules currently bucket
+ * by category so `clusterFailures` can't produce a mixed-category cluster in
+ * practice, but this helper is still the single source of truth and must be
+ * correct if the bucketing rules ever relax.
+ */
+const SEVERITY_ORDER: TriageCategory[] = [
+  TriageCategory.NEW_BUG,
+  TriageCategory.REGRESSION,
+  TriageCategory.ENV_ISSUE,
+  TriageCategory.FLAKY,
+];
+
+export function dominantCategory(members: TriageResult[]): TriageCategory {
+  if (members.length === 0) return TriageCategory.ENV_ISSUE;
+
+  const catCounts = new Map<TriageCategory, number>();
+  for (const r of members) {
+    catCounts.set(r.category, (catCounts.get(r.category) ?? 0) + 1);
+  }
+
+  const rank = (c: TriageCategory): number => {
+    const i = SEVERITY_ORDER.indexOf(c);
+    return i === -1 ? SEVERITY_ORDER.length : i;
+  };
+
+  return [...catCounts.entries()].sort(([ca, na], [cb, nb]) => {
+    if (nb !== na) return nb - na;       // frequency first
+    return rank(ca) - rank(cb);          // severity breaks ties
+  })[0]?.[0] ?? members[0]!.category;
+}
+
 export function clusterFailures(
   results:    TriageResult[],
   failureIds: number[],
@@ -184,20 +227,7 @@ export function clusterFailures(
   const clusters: FailureCluster[] = [];
 
   for (const [key, { results: members, ids }] of byKey) {
-    // Dominant category = most frequent; tie-break by severity order
-    const catCounts = new Map<TriageCategory, number>();
-    for (const r of members) {
-      catCounts.set(r.category, (catCounts.get(r.category) ?? 0) + 1);
-    }
-    const severity: TriageCategory[] = [
-      TriageCategory.NEW_BUG,
-      TriageCategory.REGRESSION,
-      TriageCategory.ENV_ISSUE,
-      TriageCategory.FLAKY,
-    ];
-    const dominantCat = severity.find(c => (catCounts.get(c) ?? 0) > 0)
-      ?? members[0]?.category
-      ?? TriageCategory.ENV_ISSUE;
+    const dominantCat = dominantCategory(members);
 
     const meanConf = members.reduce((s, r) => s + r.confidence, 0) / members.length;
 

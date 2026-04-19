@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import type { RecentFailurePattern } from '../src/types.js';
+import type { ActionProposal, Decision, PatternStats, RecentFailurePattern } from '../src/types.js';
 
 const tmp = join(tmpdir(), 'oracle-state-store-test');
 const DB  = join(tmp, 'test-state.db');
@@ -11,11 +11,17 @@ mkdirSync(tmp, { recursive: true });
 
 process.env['ORACLE_STATE_DB_PATH'] = DB;
 
-type GetRecentFn = (testName: string, errorHash: string, lookback?: number) => RecentFailurePattern | undefined;
-type SaveRunFn   = (pipelineId: string, totalFailures: number, results: never[], verdict: 'CLEAR' | 'BLOCKED') => number;
+type GetRecentFn     = (testName: string, errorHash: string, lookback?: number) => RecentFailurePattern | undefined;
+type SaveRunFn       = (pipelineId: string, totalFailures: number, results: never[], verdict: 'CLEAR' | 'BLOCKED') => number;
+type SaveActionFn    = (runId: number, proposal: ActionProposal, decision: Decision) => boolean;
+type RecordExecFn    = (runId: number, fingerprint: string, exec: { ok: boolean; detail: string; timestamp: string }) => void;
+type GetPatternFn    = (testName: string, errorHash: string) => PatternStats;
 
-let getRecentFailurePattern: GetRecentFn | null = null;
-let saveRun: SaveRunFn | null = null;
+let getRecentFailurePattern: GetRecentFn    | null = null;
+let saveRun:                 SaveRunFn      | null = null;
+let saveAction:              SaveActionFn   | null = null;
+let recordActionExecution:   RecordExecFn   | null = null;
+let getPatternStats:         GetPatternFn   | null = null;
 let getDb: (() => import('better-sqlite3').Database) | null = null;
 let dbAvailable = false;
 
@@ -24,6 +30,9 @@ try {
   store.initDb();
   getRecentFailurePattern = store.getRecentFailurePattern;
   saveRun                 = store.saveRun;
+  saveAction              = store.saveAction;
+  recordActionExecution   = store.recordActionExecution;
+  getPatternStats         = store.getPatternStats;
   getDb                   = store.getDb;
   dbAvailable             = true;
 } catch {
@@ -129,5 +138,90 @@ describeMaybe('getRecentFailurePattern', () => {
     assert.ok(result !== undefined);
     assert.strictEqual(result.totalCount, 2, 'must reflect lookback window, not all-time total');
     assert.strictEqual(result.dominantCategory, 'FLAKY');
+  });
+});
+
+// ── getPatternStats — cluster-aware history ───────────────────────────────────
+//
+// Cluster-scoped create_jira actions persist scopeId = <clusterKey>, NOT
+// "<testName>:<errorHash>". Before this fix, getPatternStats only looked at
+// the per-failure scopeId, so the cluster Jira created for a cluster that
+// contained this failure was invisible to future suppression decisions.
+//
+// These tests pin the contract: cluster actions count toward per-member
+// history via payload_json.clusterMembers[].
+
+describeMaybe('getPatternStats — cluster-aware history', () => {
+  function clusterJiraProposal(
+    runId:      number,
+    clusterKey: string,
+    members:    Array<{ testName: string; errorHash: string }>,
+  ): ActionProposal {
+    return {
+      type:        'create_jira',
+      scope:       'cluster',
+      scopeId:     clusterKey,
+      failureId:   null,
+      clusterKey,
+      runId,
+      pipelineId:     'pipe-pattern-test',
+      source:         'policy',
+      fingerprint:    `fp-${clusterKey}`,
+      clusterMembers: members,
+    };
+  }
+
+  const approved = (proposal: ActionProposal): Decision => ({
+    proposal, verdict: 'approved', confidence: 0.9, reason: 'policy:auto-approved',
+  });
+
+  it('credits a cluster Jira execution to every one of its members', () => {
+    const runId = saveRun!('pipe-cluster-hist', 0, [], 'CLEAR');
+    const members = [
+      { testName: 'Checkout > test A', errorHash: 'hA' },
+      { testName: 'Checkout > test B', errorHash: 'hB' },
+      { testName: 'Checkout > test C', errorHash: 'hC' },
+    ];
+    const proposal = clusterJiraProposal(runId, 'regression:http_404:checkout', members);
+
+    assert.ok(saveAction!(runId, proposal, approved(proposal)), 'cluster action should insert');
+    recordActionExecution!(runId, proposal.fingerprint, {
+      ok: true, detail: 'created QA-999', timestamp: new Date().toISOString(),
+    });
+
+    for (const m of members) {
+      const stats = getPatternStats!(m.testName, m.errorHash);
+      assert.equal(stats.actionCount,      1, `${m.testName} should see the cluster action`);
+      assert.equal(stats.jiraCreatedCount, 1, `${m.testName} should see the cluster Jira creation`);
+    }
+  });
+
+  it('failures outside the cluster see nothing from that cluster action', () => {
+    const runId = saveRun!('pipe-cluster-outside', 0, [], 'CLEAR');
+    const proposal = clusterJiraProposal(runId, 'regression:http_404:login', [
+      { testName: 'Login > test A', errorHash: 'la' },
+    ]);
+    saveAction!(runId, proposal, approved(proposal));
+    recordActionExecution!(runId, proposal.fingerprint, {
+      ok: true, detail: 'created QA-1000', timestamp: new Date().toISOString(),
+    });
+
+    const unrelated = getPatternStats!('Checkout > unrelated', 'hZ');
+    assert.equal(unrelated.actionCount,      0);
+    assert.equal(unrelated.jiraCreatedCount, 0);
+  });
+
+  it('failed cluster Jira executions do NOT count as createdCount', () => {
+    const runId = saveRun!('pipe-cluster-fail', 0, [], 'CLEAR');
+    const members = [{ testName: 'X', errorHash: 'xh' }];
+    const proposal = clusterJiraProposal(runId, 'regression:http_404:x', members);
+    saveAction!(runId, proposal, approved(proposal));
+    recordActionExecution!(runId, proposal.fingerprint, {
+      ok: false, detail: 'jira api 500', timestamp: new Date().toISOString(),
+    });
+
+    const stats = getPatternStats!('X', 'xh');
+    assert.equal(stats.actionCount,      1, 'proposal still counted in actionCount');
+    assert.equal(stats.jiraCreatedCount, 0, 'but failed exec must not bump jiraCreatedCount');
   });
 });

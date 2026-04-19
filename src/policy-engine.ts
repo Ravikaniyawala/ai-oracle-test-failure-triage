@@ -75,6 +75,14 @@ export function proposeClusterActions(
       pipelineId,
       source:      'policy',
       fingerprint: cluster.fingerprint,
+      // Persist cluster membership so getPatternStats() can credit each
+      // member with the cluster's jira_created / duplicate history on
+      // later runs. Without this list, history-based suppression gradually
+      // stops learning from clustered tickets.
+      clusterMembers: cluster.failures.map(f => ({
+        testName:  f.testName,
+        errorHash: f.errorHash,
+      })),
     });
   }
 

@@ -10,6 +10,7 @@ import {
   clusterDisplayTitle,
   clusterFailures,
   computeClusterKey,
+  dominantCategory,
 } from '../src/failure-clusterer.js';
 import { TriageCategory, type FailureCluster, type PatternStats, type TriageResult } from '../src/types.js';
 
@@ -284,6 +285,56 @@ describe('clusterFailures', () => {
   it('handles empty input gracefully', () => {
     const clusters = clusterFailures([], []);
     assert.equal(clusters.length, 0);
+  });
+
+});
+
+// ── dominantCategory ───────────────────────────────────────────────────────────
+//
+// Pins down the documented contract: frequency first, severity only as a
+// tie-break. The previous implementation picked whichever severity bucket
+// had ANY members at all, so a single NEW_BUG in a mostly-FLAKY cluster
+// escalated the whole cluster to NEW_BUG and (since cluster category drives
+// Jira eligibility) created tickets the cluster should not produce.
+
+describe('dominantCategory', () => {
+  it('picks the most-frequent category, NOT severity-first', () => {
+    // 4 FLAKY + 1 NEW_BUG — FLAKY dominates by frequency.
+    const members = [
+      ...Array.from({ length: 4 }, () => makeResult({ category: TriageCategory.FLAKY })),
+      makeResult({ category: TriageCategory.NEW_BUG }),
+    ];
+    assert.equal(
+      dominantCategory(members), TriageCategory.FLAKY,
+      'dominant category must follow frequency, not severity',
+    );
+  });
+
+  it('severity breaks ties — NEW_BUG > REGRESSION > ENV_ISSUE > FLAKY', () => {
+    // 2 FLAKY + 2 REGRESSION → tie on count, REGRESSION wins by severity.
+    const tie1 = [
+      ...Array.from({ length: 2 }, () => makeResult({ category: TriageCategory.FLAKY })),
+      ...Array.from({ length: 2 }, () => makeResult({ category: TriageCategory.REGRESSION })),
+    ];
+    assert.equal(dominantCategory(tie1), TriageCategory.REGRESSION);
+
+    // 3 REGRESSION + 3 NEW_BUG → tie; NEW_BUG wins by severity.
+    const tie2 = [
+      ...Array.from({ length: 3 }, () => makeResult({ category: TriageCategory.REGRESSION })),
+      ...Array.from({ length: 3 }, () => makeResult({ category: TriageCategory.NEW_BUG })),
+    ];
+    assert.equal(dominantCategory(tie2), TriageCategory.NEW_BUG);
+  });
+
+  it('empty input returns ENV_ISSUE as a safe fallback (never NEW_BUG/REGRESSION)', () => {
+    assert.equal(dominantCategory([]), TriageCategory.ENV_ISSUE);
+  });
+
+  it('single-member cluster returns that member category', () => {
+    assert.equal(
+      dominantCategory([makeResult({ category: TriageCategory.ENV_ISSUE })]),
+      TriageCategory.ENV_ISSUE,
+    );
   });
 });
 
