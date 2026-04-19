@@ -24,7 +24,8 @@ import { writeSummary } from './summary-writer.js';
 import { postPrComment } from './pr-commenter.js';
 import { proposeFailureActions, proposeClusterActions, proposeRunActions, decide, decideAgentProposal } from './policy-engine.js';
 import { aggregateClusterStats, clusterDisplayTitle, clusterFailures } from './failure-clusterer.js';
-import { detectCrossClusterSignals, formatSignals } from './cross-cluster-signals.js';
+import { detectCrossClusterSignals } from './cross-cluster-signals.js';
+import { writeDecisionSummary } from './decision-summary-writer.js';
 import { ingestFeedback } from './feedback-processor.js';
 import { loadAgentProposals } from './agent-proposal-loader.js';
 import { writeHeldActions } from './held-actions-writer.js';
@@ -530,7 +531,12 @@ async function main(): Promise<void> {
     }
 
     // 7. Decision summary artifact
-    writeDecisionSummary(decisionLog, PIPELINE_ID, parsed.totalFailures, prContext, relevanceMap, results);
+    writeDecisionSummary(decisionLog, PIPELINE_ID, parsed.totalFailures, {
+      prContext,
+      relevanceMap,
+      results,
+      crossSignals,
+    });
 
     console.log('[oracle] triage complete', summary);
   } catch (err) {
@@ -652,108 +658,6 @@ function logPatternStats(testName: string, errorHash: string, stats: PatternStat
   console.log(`  actions=${stats.actionCount}  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
 }
 
-/**
- * Write oracle-decision-summary.md — a human-readable artifact grouping all
- * decisions by verdict and highlighting history-influenced ones.
- *
- * Sections: Approved · Rejected · Held · History-influenced · PR/Change Context
- * Skipped when decisionLog is empty.
- */
-function writeDecisionSummary(
-  decisionLog:   DecisionEntry[],
-  pipelineId:    string,
-  totalFailures: number,
-  prContext?:    PrContext | null,
-  relevanceMap?: Map<string, PrRelevance>,
-  results?:      TriageResult[],
-): void {
-  if (decisionLog.length === 0) return;
-
-  const approved   = decisionLog.filter(d => d.verdict === 'approved');
-  const rejected   = decisionLog.filter(d => d.verdict === 'rejected');
-  const held       = decisionLog.filter(d => d.verdict === 'held');
-  const historical = decisionLog.filter(d => d.reason.startsWith('history:'));
-
-  const entryLine = (d: DecisionEntry): string =>
-    `- \`${d.actionType}\`${d.testName ? ` for "${d.testName}"` : ''} — ${d.explanation.replace(/^[^ ]+ [^ ]+ — /, '')}`;
-
-  const section = (title: string, entries: DecisionEntry[]): string => {
-    const header = `## ${title} (${entries.length})`;
-    if (entries.length === 0) return `${header}\n_none_`;
-    return `${header}\n${entries.map(entryLine).join('\n')}`;
-  };
-
-  const lines = [
-    `# Oracle Decision Summary — Pipeline ${pipelineId}`,
-    '',
-    `> ${totalFailures} failure(s) triaged · ${new Date().toISOString()}`,
-    '',
-    section('Approved', approved),
-    '',
-    section('Rejected', rejected),
-    '',
-    section('Held', held),
-    '',
-    section('History-influenced', historical),
-    '',
-  ];
-
-  // PR / Change Context section — only when PR context was loaded.
-  if (prContext !== null && prContext !== undefined) {
-    lines.push('## PR / Change Context');
-    lines.push('');
-
-    const meta: string[] = [];
-    if (prContext.prNumber !== undefined) meta.push(`PR #${prContext.prNumber}`);
-    if (prContext.title    !== undefined) meta.push(`"${prContext.title}"`);
-    if (prContext.author   !== undefined) meta.push(`by ${prContext.author}`);
-    if (meta.length > 0) lines.push(`**${meta.join(' · ')}**`);
-
-    lines.push('');
-    lines.push(`**${prContext.filesChanged.length} file(s) changed** in this PR.`);
-
-    if (prContext.linkedJira.length > 0) {
-      lines.push('');
-      lines.push('**Linked Jira issues:**');
-      for (const j of prContext.linkedJira) {
-        const meta: string[] = [];
-        if (j.issueType !== undefined) meta.push(j.issueType);
-        if (j.team      !== undefined) meta.push(j.team);
-        const metaSuffix  = meta.length > 0 ? ` (${meta.join(' · ')})` : '';
-        const titleSuffix = j.title !== undefined ? ` — ${j.title}` : '';
-        lines.push(`- \`${j.key}\`${metaSuffix}${titleSuffix}`);
-      }
-    }
-
-    // Per-failure relevance breakdown.
-    if (relevanceMap !== undefined && results !== undefined && results.length > 0) {
-      const highOrMedium = results.filter(r => {
-        const rel = relevanceMap.get(`${r.testName}:${r.errorHash}`);
-        return rel?.level === 'high' || rel?.level === 'medium';
-      });
-
-      lines.push('');
-      lines.push('**Failure relevance to this PR:**');
-
-      if (highOrMedium.length === 0) {
-        lines.push('_No failures have high or medium relevance to the changed files._');
-      } else {
-        for (const r of highOrMedium) {
-          const rel = relevanceMap.get(`${r.testName}:${r.errorHash}`) as PrRelevance;
-          const reason = rel.reasons.length > 0 ? ` — ${rel.reasons[0]}` : '';
-          lines.push(`- **${rel.level.toUpperCase()}** \`${r.testName}\`${reason}`);
-        }
-      }
-    }
-
-    lines.push('');
-    lines.push('> ℹ️ PR context is informational only — it does not influence any Oracle decisions.');
-    lines.push('');
-  }
-
-  writeFileSync(DECISION_SUMMARY_PATH, lines.join('\n'));
-  console.log(`[oracle] decision summary written to ${DECISION_SUMMARY_PATH} (${decisionLog.length} decision(s))`);
-}
 
 // ── Summary helper ────────────────────────────────────────────────────────────
 
