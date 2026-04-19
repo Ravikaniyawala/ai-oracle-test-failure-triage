@@ -1,4 +1,4 @@
-import { TriageCategory, type TriageResult } from './types.js';
+import { TriageCategory, type FailureCluster, type TriageResult } from './types.js';
 
 // Read Atlassian credentials dynamically so that tests can set/clear env vars
 // without worrying about module-load-time capture.
@@ -164,6 +164,83 @@ export async function createJiraDefect(
     return { key: data.key, wasExisting: false };
   } catch (err) {
     console.error('[oracle] Jira write error:', (err as Error).message);
+    return null;
+  }
+}
+
+/**
+ * Create a single Jira ticket for an entire failure cluster.
+ * The ticket title comes from cluster.jiraTitle and the description lists
+ * every affected test, so engineers see the full scope in one ticket.
+ *
+ * Deduplication works the same way as createJiraDefect: the cluster
+ * fingerprint is searched via oracle-fp label before creating a new issue.
+ */
+export async function createClusterJiraDefect(
+  cluster:     FailureCluster,
+  fingerprint: string,
+): Promise<JiraDefectResult | null> {
+  if (process.env['DRY_RUN'] === 'true') {
+    console.log(
+      `[oracle] DRY_RUN — skipping Jira for cluster "${cluster.clusterKey}"` +
+      ` (${cluster.failures.length} test(s))`,
+    );
+    return null;
+  }
+  const creds = getCredentials();
+  if (!creds) {
+    console.warn('[oracle] ATLASSIAN credentials not set — skipping cluster Jira');
+    return null;
+  }
+
+  const existing = await findExistingJiraByFingerprint(fingerprint);
+  if (existing !== null) return { key: existing, wasExisting: true };
+
+  const { baseUrl, token, email, projectKey } = creds;
+  const priority = cluster.category === TriageCategory.REGRESSION ? 'High' : 'Medium';
+  const fpLabel  = oracleFpLabel(fingerprint);
+
+  const body = {
+    fields: {
+      project:     { key: projectKey },
+      summary:     `[AI Oracle] ${cluster.jiraTitle.slice(0, 200)}`,
+      description: {
+        type:    'doc',
+        version: 1,
+        content: [{
+          type:    'paragraph',
+          content: [{ type: 'text', text: cluster.jiraBody }],
+        }],
+      },
+      issuetype: { name: 'Bug' },
+      priority:  { name: priority },
+      labels:    ['ai-oracle', 'automated', fpLabel],
+    },
+  };
+
+  try {
+    const res = await fetch(`${baseUrl}/rest/api/3/issue`, {
+      method:  'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      console.error(`[oracle] Jira create failed for cluster "${cluster.clusterKey}":`, await res.text());
+      return null;
+    }
+
+    const data = await res.json() as { key: string };
+    console.log(
+      `[oracle] Jira created: ${data.key} for cluster "${cluster.clusterKey}"` +
+      ` (${cluster.failures.length} test(s)) [${fpLabel}]`,
+    );
+    return { key: data.key, wasExisting: false };
+  } catch (err) {
+    console.error('[oracle] cluster Jira write error:', (err as Error).message);
     return null;
   }
 }

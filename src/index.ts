@@ -17,12 +17,13 @@ import {
   getPatternStats,
   savePrContext,
 } from './state-store.js';
-import { createJiraDefect } from './jira-writer.js';
+import { createClusterJiraDefect } from './jira-writer.js';
 import { postSlackSummary } from './slack-notifier.js';
 import { loadInstincts } from './instinct-loader.js';
 import { writeSummary } from './summary-writer.js';
 import { postPrComment } from './pr-commenter.js';
-import { proposeFailureActions, proposeRunActions, decide, decideAgentProposal } from './policy-engine.js';
+import { proposeFailureActions, proposeClusterActions, proposeRunActions, decide, decideAgentProposal } from './policy-engine.js';
+import { clusterFailures } from './failure-clusterer.js';
 import { ingestFeedback } from './feedback-processor.js';
 import { loadAgentProposals } from './agent-proposal-loader.js';
 import { writeHeldActions } from './held-actions-writer.js';
@@ -351,47 +352,74 @@ async function main(): Promise<void> {
       }
     }
 
-    // 3. Propose + decide per-failure actions
+    // 2.7. Cluster failures by root cause — one Jira ticket per cluster, not per failure.
+    const clusters = clusterFailures(results, failureIds);
+    console.log(
+      `[oracle] ${clusters.length} cluster(s) from ${results.length} failure(s): ` +
+      clusters.map(c => `"${c.clusterKey}" (${c.failures.length})`).join(', '),
+    );
+
+    // 3. Propose + decide per-failure actions (retry_test, quarantine, etc.)
+    //    create_jira has moved to step 3.5 at cluster granularity.
     const jiraCreated:  JiraCreated[]    = [];
     const decisionLog:  DecisionEntry[]  = [];
 
     for (let i = 0; i < results.length; i++) {
       const result    = results[i] as TriageResult;
       const failureId = failureIds[i] as number;
-
-      // Stats for this failure are already in patternStatsMap from step 2.5.
       const failureStats = patternStatsMap.get(`${result.testName}:${result.errorHash}`);
 
       for (const proposal of proposeFailureActions(result, failureId, runId, PIPELINE_ID)) {
-        const jiraAlreadyCreated = proposal.type === 'create_jira'
-          ? wasJiraCreatedFor(proposal.fingerprint)
-          : false;
-
         const decision = decide(proposal, result.confidence, {
-          jiraAlreadyCreated,
+          jiraAlreadyCreated: false,
           jiraDuplicateCount: failureStats?.jiraDuplicateCount,
           jiraCreatedCount:   failureStats?.jiraCreatedCount,
         });
         const inserted = saveAction(runId, proposal, decision);
-
         if (!inserted) {
           console.log(`[oracle] skipping duplicate action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
           continue;
         }
-
-        // Build explanation and collect for summary artifact (all decisions).
         const explanation = explainDecision(proposal.type, decision.verdict, decision.reason, failureStats);
         decisionLog.push({ actionType: proposal.type, verdict: decision.verdict, reason: decision.reason, testName: result.testName, explanation });
-
-        // Log notable decisions only — keeps CI output readable.
         if (isNotable(decision.verdict, decision.reason)) {
           console.log(`[decision] ${explanation} — ${result.testName}`);
+        }
+      }
+    }
+
+    // 3.5. Propose + decide cluster-level Jira actions (one per root-cause cluster).
+    for (const cluster of clusters) {
+      // Use aggregate pattern stats from the first failure in the cluster for
+      // history-influenced suppression (e.g. jira_duplicate_count).
+      const repResult = cluster.failures[0];
+      const repStats  = repResult
+        ? patternStatsMap.get(`${repResult.testName}:${repResult.errorHash}`)
+        : undefined;
+
+      for (const proposal of proposeClusterActions(cluster, runId, PIPELINE_ID)) {
+        const jiraAlreadyCreated = wasJiraCreatedFor(proposal.fingerprint);
+        const decision = decide(proposal, cluster.confidence, {
+          jiraAlreadyCreated,
+          jiraDuplicateCount: repStats?.jiraDuplicateCount,
+          jiraCreatedCount:   repStats?.jiraCreatedCount,
+        });
+        const inserted = saveAction(runId, proposal, decision);
+        if (!inserted) {
+          console.log(`[oracle] skipping duplicate cluster action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
+          continue;
+        }
+        const explanation = explainDecision(proposal.type, decision.verdict, decision.reason, repStats);
+        const clusterLabel = `cluster "${cluster.clusterKey}" (${cluster.failures.length} test(s))`;
+        decisionLog.push({ actionType: proposal.type, verdict: decision.verdict, reason: decision.reason, testName: clusterLabel, explanation });
+        if (isNotable(decision.verdict, decision.reason)) {
+          console.log(`[decision] ${explanation} — ${clusterLabel}`);
         }
 
         if (decision.verdict !== 'approved') continue;
 
         if (proposal.type === 'create_jira') {
-          const jiraResult = await createJiraDefect(result, proposal.fingerprint);
+          const jiraResult = await createClusterJiraDefect(cluster, proposal.fingerprint);
           recordActionExecution(proposal.fingerprint, {
             ok:        jiraResult !== null,
             detail:    jiraResult
@@ -401,10 +429,11 @@ async function main(): Promise<void> {
               : 'create_jira failed or skipped',
             timestamp: new Date().toISOString(),
           });
-          // Only count genuinely new issues — reused existing keys are not
-          // new creations and must not inflate 'Jiras created' metrics.
           if (jiraResult !== null && !jiraResult.wasExisting) {
-            jiraCreated.push({ testName: result.testName, category: result.category, key: jiraResult.key });
+            // Surface each affected test in jiraCreated so Slack/summary shows scope
+            for (const f of cluster.failures) {
+              jiraCreated.push({ testName: f.testName, category: cluster.category, key: jiraResult.key });
+            }
           }
         }
       }

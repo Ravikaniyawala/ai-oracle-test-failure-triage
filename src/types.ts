@@ -53,6 +53,35 @@ export interface TriageApiResponse {
   }>;
 }
 
+// ── Failure clustering ────────────────────────────────────────────────────────
+
+/**
+ * A group of failures that share the same root cause and should map to a
+ * single Jira ticket rather than one ticket per failure.
+ *
+ * Solo clusters (one failure that doesn't match any grouping rule) are still
+ * modelled as a cluster with failures.length === 1 so the rest of the pipeline
+ * can treat all Jira proposals uniformly.
+ */
+export interface FailureCluster {
+  /** Stable human-readable key that identifies the root cause. */
+  clusterKey:  string;
+  /** 16-char hex fingerprint derived from clusterKey — used for Jira dedup. */
+  fingerprint: string;
+  /** Dominant category across member failures. */
+  category:    TriageCategory;
+  /** Mean confidence of member failures. */
+  confidence:  number;
+  /** The failures belonging to this cluster. */
+  failures:    TriageResult[];
+  /** Corresponding SQLite failure row IDs (parallel to failures[]). */
+  failureIds:  number[];
+  /** Ready-to-use Jira ticket title. */
+  jiraTitle:   string;
+  /** Multi-line Jira description listing root cause + all affected tests. */
+  jiraBody:    string;
+}
+
 // ── Policy / orchestration types ─────────────────────────────────────────────
 
 export type ActionType =
