@@ -161,7 +161,10 @@ async function main(): Promise<void> {
         const outcome = executeRetry(proposal.testName);
 
         // Record execution result in the shared actions ledger.
-        recordActionExecution(agentDecision.fingerprint, {
+        // Uses AGENT_MODE_RUN_ID — agent proposals are decided outside of any
+        // specific triage run, so they share the fixed AGENT_MODE_RUN_ID
+        // that saveAction() also used above.
+        recordActionExecution(AGENT_MODE_RUN_ID, agentDecision.fingerprint, {
           ok:        outcome === 'passed',
           detail:    outcome === 'skipped'
             ? 'skipped:no_retry_command'
@@ -190,7 +193,7 @@ async function main(): Promise<void> {
 
       if (proposal.proposalType === 'request_human_review') {
         // Low-risk acknowledgement only — no external side effect.
-        recordActionExecution(agentDecision.fingerprint, {
+        recordActionExecution(AGENT_MODE_RUN_ID, agentDecision.fingerprint, {
           ok:        true,
           detail:    'request_human_review acknowledged',
           timestamp: new Date().toISOString(),
@@ -428,7 +431,7 @@ async function main(): Promise<void> {
 
         if (proposal.type === 'create_jira') {
           const jiraResult = await createClusterJiraDefect(cluster, proposal.fingerprint);
-          recordActionExecution(proposal.fingerprint, {
+          recordActionExecution(runId, proposal.fingerprint, {
             ok:        jiraResult !== null,
             detail:    jiraResult
               ? (jiraResult.wasExisting
@@ -479,7 +482,7 @@ async function main(): Promise<void> {
           .map(d => d.testName ? `${d.explanation} — ${d.testName.slice(0, 60)}` : d.explanation);
 
         await postSlackSummary(results, jiraCreated, PIPELINE_ID, highlights);
-        recordActionExecution(proposal.fingerprint, {
+        recordActionExecution(runId, proposal.fingerprint, {
           ok:        true,
           detail:    'slack posted',
           timestamp: new Date().toISOString(),

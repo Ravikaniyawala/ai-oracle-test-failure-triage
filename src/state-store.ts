@@ -53,7 +53,7 @@ export function initDb(): void {
       cluster_key        TEXT,
       scope              TEXT    NOT NULL,
       action_type        TEXT    NOT NULL,
-      action_fingerprint TEXT    NOT NULL UNIQUE,
+      action_fingerprint TEXT    NOT NULL,
       source             TEXT    NOT NULL DEFAULT 'policy',
       verdict            TEXT    NOT NULL,
       payload_json       TEXT,
@@ -65,7 +65,11 @@ export function initDb(): void {
       execution_ok       INTEGER,
       execution_detail   TEXT,
       FOREIGN KEY (run_id)     REFERENCES runs(id),
-      FOREIGN KEY (failure_id) REFERENCES failures(id)
+      FOREIGN KEY (failure_id) REFERENCES failures(id),
+      -- Uniqueness is per-run so that re-considering the same action on a
+      -- later run still records an audit row (e.g. "rejected by history
+      -- because this Jira was already created on a prior run").
+      UNIQUE (run_id, action_fingerprint)
     );
     CREATE TABLE IF NOT EXISTS feedback (
       id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,16 +220,21 @@ export function saveAction(
 
 /**
  * Record the outcome of executing an action identified by its fingerprint.
+ *
+ * Scoped to `runId` so that with per-run uniqueness on (run_id, fingerprint),
+ * we only update the current run's row — prior runs' audit rows are left
+ * untouched. That preserves cross-run history for wasJiraCreatedFor().
  */
 export function recordActionExecution(
+  runId:       number,
   fingerprint: string,
-  exec: ActionExecution,
+  exec:        ActionExecution,
 ): void {
   db.prepare(
     `UPDATE actions
      SET executed_at = ?, execution_ok = ?, execution_detail = ?
-     WHERE action_fingerprint = ?`
-  ).run(exec.timestamp, exec.ok ? 1 : 0, exec.detail, fingerprint);
+     WHERE run_id = ? AND action_fingerprint = ?`
+  ).run(exec.timestamp, exec.ok ? 1 : 0, exec.detail, runId, fingerprint);
 }
 
 /**
