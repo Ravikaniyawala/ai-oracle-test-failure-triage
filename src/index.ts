@@ -24,6 +24,7 @@ import { writeSummary } from './summary-writer.js';
 import { postPrComment } from './pr-commenter.js';
 import { proposeFailureActions, proposeClusterActions, proposeRunActions, decide, decideAgentProposal } from './policy-engine.js';
 import { clusterFailures } from './failure-clusterer.js';
+import { detectCrossClusterSignals, formatSignals } from './cross-cluster-signals.js';
 import { ingestFeedback } from './feedback-processor.js';
 import { loadAgentProposals } from './agent-proposal-loader.js';
 import { writeHeldActions } from './held-actions-writer.js';
@@ -359,6 +360,12 @@ async function main(): Promise<void> {
       clusters.map(c => `"${c.clusterKey}" (${c.failures.length})`).join(', '),
     );
 
+    // 2.8. Detect cross-cluster signals — shared tokens that suggest a common root cause.
+    const crossSignals = detectCrossClusterSignals(clusters);
+    for (const signal of crossSignals) {
+      console.log(`[oracle] cross-cluster signal: ${signal.description}`);
+    }
+
     // 3. Propose + decide per-failure actions (retry_test, quarantine, etc.)
     //    create_jira has moved to step 3.5 at cluster granularity.
     const jiraCreated:  JiraCreated[]    = [];
@@ -481,6 +488,7 @@ async function main(): Promise<void> {
       jirasCreated:    jiraCreated,
       slackPosted,
       suppressionCount,
+      crossSignals,
     });
     await postPrComment(markdown);
 

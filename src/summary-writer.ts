@@ -1,6 +1,7 @@
 import { appendFileSync } from 'fs';
 import { TriageCategory, type JiraCreated, type TriageResult } from './types.js';
 import { getRecentFailurePattern } from './state-store.js';
+import { formatSignals, type CrossClusterSignal } from './cross-cluster-signals.js';
 
 const SUMMARY_PATH = process.env['GITHUB_STEP_SUMMARY'];
 
@@ -20,11 +21,13 @@ const CATEGORY_ORDER: TriageCategory[] = [
 
 export interface SummaryOptions {
   /** Jira issues actually created during this run (execution_ok = true). */
-  jirasCreated?:    JiraCreated[];
+  jirasCreated?:     JiraCreated[];
   /** Whether a Slack notification was sent. */
-  slackPosted?:     boolean;
+  slackPosted?:      boolean;
   /** Number of actions suppressed by history-based policy rules. */
   suppressionCount?: number;
+  /** Cross-cluster signals detected after clustering. */
+  crossSignals?:     CrossClusterSignal[];
 }
 
 export function writeSummary(
@@ -39,7 +42,7 @@ export function writeSummary(
   const verdict      = blocked ? 'BLOCKED' : 'CLEAR';
   const verdictIcon  = blocked ? '🔴' : '✅';
   const counts       = countByCategory(results);
-  const { jirasCreated = [], slackPosted = false, suppressionCount = 0 } = opts;
+  const { jirasCreated = [], slackPosted = false, suppressionCount = 0, crossSignals = [] } = opts;
 
   const lines: string[] = [];
 
@@ -126,6 +129,14 @@ export function writeSummary(
       lines.push('</details>');
       lines.push('');
     }
+  }
+
+  // ── Cross-cluster signals ─────────────────────────────────────────────────
+  const signalBlock = formatSignals(crossSignals);
+  if (signalBlock) {
+    lines.push('---');
+    lines.push('');
+    lines.push(signalBlock);
   }
 
   // ── Actions taken ─────────────────────────────────────────────────────────
