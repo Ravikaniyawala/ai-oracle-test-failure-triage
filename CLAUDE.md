@@ -19,6 +19,7 @@ writes Jira defects, posts Slack alerts, and persists learnings to SQLite.
 ## Environment variables (all required in CI)
 - ANTHROPIC_API_KEY
 - ATLASSIAN_TOKEN — Jira API token
+- ATLASSIAN_EMAIL — Atlassian account email for Jira Basic Auth
 - ATLASSIAN_BASE_URL — e.g. https://your-org.atlassian.net
 - ATLASSIAN_PROJECT_KEY — Jira project key for defects e.g. QA
 - SLACK_WEBHOOK_URL

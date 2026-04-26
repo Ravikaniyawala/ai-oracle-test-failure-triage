@@ -305,6 +305,23 @@ jobs:
     secrets: inherit
 ```
 
+> **Note on `report-path`:** `actions/upload-artifact@v4` strips the leading
+> common path of an upload, so `path: test-results/` produces an artifact
+> whose root **is** the contents of `test-results/`. The reusable workflow's
+> resolver handles three forms:
+> - `report-path: results.json`              → matches `<artifact-root>/results.json`
+> - `report-path: test-results/results.json` → matches by basename
+> - `report-path: test-results/` (or `.` / `./`) → falls back to the artifact root and Oracle scans for `.json`/`.xml` reports
+>
+> The artifact-root fallback is opt-in via an **explicit directory form**:
+> empty, `.`, `./`, or a trailing `/`. Extensionless names like `README` or
+> `junit` are treated as files, not directories, and will not trigger a
+> root-level scan — pass `report-path: .` if you actually want a directory
+> scan.
+>
+> If none of these match, the run goes BLOCKED (or DEGRADED in pass-through
+> mode) with a clear `could not read report path` error — never silent CLEAR.
+
 ---
 
 ## Jira integration
@@ -318,8 +335,9 @@ Oracle creates one Jira defect per unique failure pattern when:
 
 The defect includes the test name, error category, confidence score, reasoning,
 and suggested fix from the LLM. Defects are created via the Jira REST API using
-your `ATLASSIAN_TOKEN`. Every created issue receives an `oracle-fp-<fingerprint>`
-label that acts as a stable idempotency token across concurrent runners.
+your `ATLASSIAN_EMAIL` and `ATLASSIAN_TOKEN`. Every created issue receives an
+`oracle-fp-<fingerprint>` label that acts as a stable idempotency token across
+concurrent runners.
 
 ---
 
@@ -436,6 +454,7 @@ Add variables in **Settings → CI/CD → Variables**:
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Claude API key | yes | yes |
 | `ATLASSIAN_TOKEN` | Jira API token | yes | yes |
+| `ATLASSIAN_EMAIL` | Atlassian account email for Jira Basic Auth | no | no |
 | `ATLASSIAN_BASE_URL` | e.g. `https://your-org.atlassian.net` | no | no |
 | `ATLASSIAN_PROJECT_KEY` | Jira project key e.g. `QA` | no | no |
 | `SLACK_WEBHOOK_URL` | Incoming webhook URL | yes | yes |
@@ -471,10 +490,12 @@ jobs:
     if: failure()
     uses: your-org/ai-oracle/.github/workflows/oracle-triage.yml@main
     with:
+      report-artifact-name: test-results
       report-path: test-results/results.json
     secrets:
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
       atlassian-token: ${{ secrets.ATLASSIAN_TOKEN }}
+      atlassian-email: ${{ secrets.ATLASSIAN_EMAIL }}
       atlassian-base-url: ${{ secrets.ATLASSIAN_BASE_URL }}
       atlassian-project-key: ${{ secrets.ATLASSIAN_PROJECT_KEY }}
       slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -575,6 +596,7 @@ oracle-triage:
   uses: your-org/ai-oracle/.github/workflows/oracle-triage.yml@main
   with:
     report-artifact-name: test-results
+    report-path: test-results/
     triage-failure-mode: pass-through   # optional — informational mode
   secrets:
     anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

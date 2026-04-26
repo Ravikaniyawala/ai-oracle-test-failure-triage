@@ -116,6 +116,56 @@ jobs:
           name: ${{ inputs.report-artifact-name }}
           path: downloaded-results/
 
+      - name: Resolve report path
+        id: report-path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          root="${{ github.workspace }}/downloaded-results"
+          requested="${{ inputs.report-path }}"
+
+          # actions/upload-artifact@v4 strips the leading common path of an
+          # uploaded `path:`. So `path: test-results/` produces an artifact
+          # whose ROOT is the contents of test-results/, not a nested dir.
+          # After download to $root, the file the user wrote at
+          # `test-results/results.json` lives at `$root/results.json`, and
+          # `test-results/` itself lives at `$root/`.
+          #
+          # Resolution order (first hit wins):
+          #   1. Exact path under the artifact root
+          #      — covers the rare case where the producer kept the dir
+          #   2. basename of the requested path under the artifact root
+          #      — covers `path: test-results/results.json` upload + same
+          #        report-path on the consumer side
+          #   3. Artifact root itself when the request is an EXPLICIT
+          #      directory form: '', '.', './', or any path ending in '/'.
+          #      — covers `path: test-results/` upload + `report-path:
+          #        test-results/`. parseReport() handles directories.
+          #      Bare extensionless names like `README` or `junit` are
+          #      NOT treated as directories — those are legitimate file
+          #      names and should fall through to error rather than
+          #      silently scanning the artifact root for any reports.
+          #   4. Fall through to $root/$requested so the failure surfaces
+          #      with a clear "could not read" error from parseReport.
+          is_explicit_dir=false
+          case "$requested" in
+            '' | . | ./ | */) is_explicit_dir=true ;;
+          esac
+
+          if [ -e "$root/$requested" ]; then
+            resolved="$root/$requested"
+          elif [ -e "$root/$(basename "$requested")" ]; then
+            resolved="$root/$(basename "$requested")"
+          elif [ "$is_explicit_dir" = true ] && [ -d "$root" ]; then
+            resolved="$root"
+          else
+            resolved="$root/$requested"
+          fi
+
+          echo "[oracle] resolved report path: $resolved"
+          echo "path=$resolved" >> "$GITHUB_OUTPUT"
+
       # ── Cache note ──────────────────────────────────────────────────────────
       # The cache is a PERSISTENCE mechanism, not a locking mechanism.
       # Two runners that start before either has saved its cache will both
@@ -219,7 +269,7 @@ jobs:
           SLACK_WEBHOOK_URL:      ${{ secrets.slack-webhook-url }}
           DRY_RUN:                    ${{ inputs.dry-run && 'true' || 'false' }}
           ORACLE_TRIAGE_FAILURE_MODE: ${{ inputs.triage-failure-mode }}
-          PLAYWRIGHT_REPORT_PATH:     ${{ github.workspace }}/downloaded-results/
+          PLAYWRIGHT_REPORT_PATH:     ${{ steps.report-path.outputs.path }}
           REPORT_FORMAT:              ${{ inputs.report-format }}
           ORACLE_STATE_DB_PATH:       ${{ github.workspace }}/.oracle-cache/oracle-state.db
           ORACLE_PR_CONTEXT_PATH:     ${{ env.PR_CONTEXT_FILE }}

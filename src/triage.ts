@@ -42,7 +42,7 @@ async function triageBatch(
     const textBlock = response.content.find(b => b.type === 'text');
     const text = textBlock?.type === 'text' ? textBlock.text : '{}';
     const raw    = JSON.parse(text.replace(/```json|```/g, '').trim()) as unknown;
-    const parsed = validateTriageApiResponse(raw);
+    const parsed = validateTriageApiResponse(raw, failures.map(f => f.testName));
 
     return parsed.results.map((r, idx) => ({
       ...(failures[idx] as PlaywrightFailure),

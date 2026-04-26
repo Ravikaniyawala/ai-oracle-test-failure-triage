@@ -62,6 +62,19 @@ describe('validateTriageApiResponse — valid input', () => {
     assert.equal(result.results[1]!.category, 'FLAKY');
   });
 
+  it('accepts expected test names when count and order match', () => {
+    const result = validateTriageApiResponse(
+      {
+        results: [
+          VALID_RESULT,
+          { ...VALID_RESULT, testName: 'Other > test', category: 'FLAKY', confidence: 0.5 },
+        ],
+      },
+      ['Login > should redirect after auth', 'Other > test'],
+    );
+    assert.equal(result.results.length, 2);
+  });
+
   it('ignores unknown extra fields in the response root', () => {
     const result = validateTriageApiResponse({ results: [VALID_RESULT], extra_field: true });
     assert.equal(result.results.length, 1);
@@ -259,5 +272,135 @@ describe('validateTriageApiResponse — invalid result fields', () => {
       () => validateTriageApiResponse({ results: [{ ...VALID_RESULT, category: 'INVALID' }] }),
       /schema validation/,
     );
+  });
+});
+
+describe('validateTriageApiResponse — expected failure alignment', () => {
+  it('throws when the model returns too few results', () => {
+    assert.throws(
+      () => validateTriageApiResponse(
+        { results: [VALID_RESULT] },
+        ['Login > should redirect after auth', 'Other > test'],
+      ),
+      /result count mismatch: expected 2, got 1/,
+    );
+  });
+
+  it('re-zips results in the expected order when the model returns a permutation', () => {
+    // Downstream zips by index, so we must return results in the expected
+    // order. Tolerating a permutation (instead of throwing) prevents one
+    // model deviation from invalidating an entire 10-failure batch.
+    const result = validateTriageApiResponse(
+      {
+        results: [
+          { ...VALID_RESULT, testName: 'Other > test',                       category: 'FLAKY'      },
+          { ...VALID_RESULT, testName: 'Login > should redirect after auth', category: 'REGRESSION' },
+        ],
+      },
+      ['Login > should redirect after auth', 'Other > test'],
+    );
+    assert.equal(result.results[0]!.testName, 'Login > should redirect after auth');
+    assert.equal(result.results[0]!.category, 'REGRESSION');
+    assert.equal(result.results[1]!.testName, 'Other > test');
+    assert.equal(result.results[1]!.category, 'FLAKY');
+  });
+
+  it('throws when the model omits a classification for an expected testName', () => {
+    // Same count, but the test name set differs — one expected name is
+    // missing and an unexpected name was returned in its place. This is the
+    // genuine wrong-attribution risk that strict validation must catch.
+    assert.throws(
+      () => validateTriageApiResponse(
+        {
+          results: [
+            { ...VALID_RESULT, testName: 'Login > should redirect after auth' },
+            { ...VALID_RESULT, testName: 'Bogus > unknown test' },
+          ],
+        },
+        ['Login > should redirect after auth', 'Other > test'],
+      ),
+      /missing classification for testName "Other > test"/,
+    );
+  });
+
+  it('throws when the model returns duplicate testNames', () => {
+    // Two model items claiming the same input is unrecoverable — we can't
+    // decide which classification to keep. By the count check, a duplicate
+    // also implies an expected name was dropped.
+    assert.throws(
+      () => validateTriageApiResponse(
+        {
+          results: [
+            { ...VALID_RESULT, testName: 'Login > should redirect after auth' },
+            { ...VALID_RESULT, testName: 'Login > should redirect after auth' },
+          ],
+        },
+        ['Login > should redirect after auth', 'Other > test'],
+      ),
+      /duplicate testName "Login > should redirect after auth"/,
+    );
+  });
+
+  // Playwright can produce duplicate test titles across projects, retries, or
+  // parameterized cases. When `expectedTestNames` itself contains duplicates,
+  // the name → item map is ambiguous: one model item would silently be reused
+  // for multiple expected slots. The validator must fall back to strict
+  // positional alignment, which is the only safe option since the downstream
+  // zip in src/triage.ts is positional.
+  it('preserves order alignment when expectedTestNames has duplicates and model is in input order', () => {
+    // Two failures with the same testName (e.g. same test in two projects).
+    // Model returns them positionally — strict path must accept this.
+    const result = validateTriageApiResponse(
+      {
+        results: [
+          { ...VALID_RESULT, testName: 'Suite > flaky', category: 'FLAKY'      },
+          { ...VALID_RESULT, testName: 'Suite > flaky', category: 'REGRESSION' },
+        ],
+      },
+      ['Suite > flaky', 'Suite > flaky'],
+    );
+    assert.equal(result.results.length, 2);
+    assert.equal(result.results[0]!.category, 'FLAKY');
+    assert.equal(result.results[1]!.category, 'REGRESSION');
+  });
+
+  it('throws strict-order error (not silent reuse) when expectedTestNames has duplicates and model reorders', () => {
+    // Same duplicate-name input, but model swaps the two items. Without the
+    // duplicate-aware fallback, the name-map path would have looked up
+    // 'Suite > flaky' twice and silently reused whichever item the map
+    // happened to keep — assigning the same category to both failures.
+    // With the fallback, the strict positional check fires.
+    assert.throws(
+      () => validateTriageApiResponse(
+        {
+          results: [
+            { ...VALID_RESULT, testName: 'Suite > different', category: 'FLAKY' },
+            { ...VALID_RESULT, testName: 'Suite > flaky',     category: 'REGRESSION' },
+          ],
+        },
+        ['Suite > flaky', 'Suite > flaky'],
+      ),
+      /result order mismatch.*duplicate testNames/s,
+    );
+  });
+
+  it('does NOT silently reuse one model item for multiple expected slots when duplicates exist', () => {
+    // Sanity: even if the model returns two items both matching the duplicate
+    // name but in the wrong INNER order (e.g. wrong category for slot 0),
+    // strict positional alignment preserves that — we never quietly pick one
+    // item to stand in for two slots.
+    const result = validateTriageApiResponse(
+      {
+        results: [
+          { ...VALID_RESULT, testName: 'Suite > flaky', category: 'NEW_BUG'    },
+          { ...VALID_RESULT, testName: 'Suite > flaky', category: 'ENV_ISSUE'  },
+        ],
+      },
+      ['Suite > flaky', 'Suite > flaky'],
+    );
+    // Both slots distinct, no reuse — categories preserved positionally.
+    assert.notStrictEqual(result.results[0], result.results[1]);
+    assert.equal(result.results[0]!.category, 'NEW_BUG');
+    assert.equal(result.results[1]!.category, 'ENV_ISSUE');
   });
 });

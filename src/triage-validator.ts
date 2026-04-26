@@ -49,8 +49,23 @@ function formatZodIssues(err: ZodError): string {
  *      — confidence must be a finite number in [0, 1]
  *      — testName must be a non-empty string
  *      — reasoning and suggested_fix must be strings
+ *   4. If expectedTestNames is provided:
+ *      a. count must match the input
+ *      b. the SET of testNames must match the input (no duplicates,
+ *         no missing, no extras)
+ *      c. results are returned in the expectedTestNames ORDER, re-zipping
+ *         the model's output if it returned a permutation. The downstream
+ *         consumer (`src/triage.ts`) zips by index against the input
+ *         failures array, so a reorder would mis-attribute categories;
+ *         silently re-zipping prevents that without aborting the whole
+ *         batch on a model deviation. Duplicate testNames in the model's
+ *         output trip the set check (a duplicate by definition means
+ *         another expected name is missing).
  */
-export function validateTriageApiResponse(raw: unknown): TriageApiResponse {
+export function validateTriageApiResponse(
+  raw: unknown,
+  expectedTestNames?: readonly string[],
+): TriageApiResponse {
   // Pre-checks give cleaner error messages for the two most common
   // structural violations before handing off to Zod for field-level checks.
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -69,5 +84,75 @@ export function validateTriageApiResponse(raw: unknown): TriageApiResponse {
     );
   }
 
-  return result.data;
+  const parsed = result.data;
+
+  if (expectedTestNames !== undefined) {
+    if (parsed.results.length !== expectedTestNames.length) {
+      throw new TriageValidationError(
+        `LLM response result count mismatch: expected ${expectedTestNames.length}, got ${parsed.results.length}`,
+      );
+    }
+
+    // Detect duplicate test names in the INPUT. Playwright can produce
+    // duplicate titles across projects, retries, or parameterized cases —
+    // when that happens, the name → item map below is ambiguous (one model
+    // item would silently be reused for multiple expected slots). In that
+    // case fall back to strict positional validation: the model MUST
+    // return results in input order. The downstream zip in src/triage.ts
+    // is positional anyway, so strict order is the only safe alignment
+    // when names are not unique.
+    const expectedNameCounts = new Map<string, number>();
+    for (const name of expectedTestNames) {
+      expectedNameCounts.set(name, (expectedNameCounts.get(name) ?? 0) + 1);
+    }
+    const hasDuplicateExpected = [...expectedNameCounts.values()].some(c => c > 1);
+
+    if (hasDuplicateExpected) {
+      for (let i = 0; i < expectedTestNames.length; i++) {
+        const expected = expectedTestNames[i]!;
+        const actual   = parsed.results[i]!.testName;
+        if (actual !== expected) {
+          throw new TriageValidationError(
+            `LLM response result order mismatch at results.${i}.testName: expected "${expected}", got "${actual}" ` +
+            `(strict order required because the input batch contains duplicate testNames)`,
+          );
+        }
+      }
+      return parsed;
+    }
+
+    // Unique-name path — build a name → item map. Duplicate testNames in
+    // the MODEL response are rejected outright: they would mean two model
+    // entries claim the same input, and we cannot decide which
+    // classification to keep.
+    const byName = new Map<string, TriageApiResponse['results'][number]>();
+    for (const item of parsed.results) {
+      if (byName.has(item.testName)) {
+        throw new TriageValidationError(
+          `LLM response contains duplicate testName "${item.testName}"`,
+        );
+      }
+      byName.set(item.testName, item);
+    }
+
+    // Re-zip in the expected order. Any expected name not in the map is a
+    // missing-classification error; the count check above guarantees that
+    // a missing name implies an extra unexpected name was returned in its
+    // place.
+    const reordered: TriageApiResponse['results'] = [];
+    for (let i = 0; i < expectedTestNames.length; i++) {
+      const expected = expectedTestNames[i]!;
+      const item = byName.get(expected);
+      if (item === undefined) {
+        throw new TriageValidationError(
+          `LLM response missing classification for testName "${expected}" (expected at results.${i})`,
+        );
+      }
+      reordered.push(item);
+    }
+
+    return { results: reordered };
+  }
+
+  return parsed;
 }

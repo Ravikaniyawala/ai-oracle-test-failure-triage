@@ -11,6 +11,7 @@
 #   ANTHROPIC_API_KEY
 #   GITLAB_TOKEN            (project/group access token with api scope — for MR comments)
 #   ATLASSIAN_TOKEN
+#   ATLASSIAN_EMAIL         (Atlassian account email for Jira Basic Auth)
 #   ATLASSIAN_BASE_URL
 #   ATLASSIAN_PROJECT_KEY
 #   SLACK_WEBHOOK_URL
@@ -41,6 +42,12 @@
   script:
     - |
       cd /tmp/oracle
+      # Inline assignments below override / set these specific vars for the
+      # `npx tsx` invocation. All other CI/CD variables (ANTHROPIC_API_KEY,
+      # ATLASSIAN_TOKEN, ATLASSIAN_EMAIL, ATLASSIAN_BASE_URL,
+      # ATLASSIAN_PROJECT_KEY, SLACK_WEBHOOK_URL, …) are inherited
+      # automatically from the GitLab runner environment — no explicit
+      # forwarding needed.
       PLAYWRIGHT_REPORT_PATH=$CI_PROJECT_DIR/$PLAYWRIGHT_REPORT_PATH \
       ORACLE_STATE_DB_PATH=$CI_PROJECT_DIR/$ORACLE_STATE_DB_PATH \
       GITLAB_TOKEN=$GITLAB_TOKEN \

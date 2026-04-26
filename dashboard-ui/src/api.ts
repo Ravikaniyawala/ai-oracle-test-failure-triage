@@ -23,12 +23,16 @@ function buildBase(): string {
   return repoId ? `${basePath}/api/repos/${repoId}` : `${basePath}/api/v1`;
 }
 
-interface DateRange {
+interface QueryParams {
+  [key: string]: string | number | undefined;
+}
+
+interface DateRange extends QueryParams {
   start?: string;
   end?:   string;
 }
 
-function buildUrl(path: string, params: Record<string, string | number | undefined> = {}): string {
+function buildUrl(path: string, params: QueryParams = {}): string {
   const url = new URL(`${buildBase()}${path}`, window.location.origin);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined) url.searchParams.set(k, String(v));
