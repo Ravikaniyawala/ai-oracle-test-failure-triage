@@ -11,6 +11,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 import { TriageCategory, type TriageResult } from '../src/types.js';
+import type { SummaryOptions } from '../src/summary-writer.js';
 
 const tmp = join(tmpdir(), 'oracle-summary-writer-test');
 const DB  = join(tmp, 'test-state.db');
@@ -18,7 +19,12 @@ mkdirSync(tmp, { recursive: true });
 
 process.env['ORACLE_STATE_DB_PATH'] = DB;
 
-type WriteSummaryFn = (results: TriageResult[], totalTests: number, pipelineId: string) => string;
+type WriteSummaryFn = (
+  results: TriageResult[],
+  totalTests: number,
+  pipelineId: string,
+  opts?: SummaryOptions,
+) => string;
 
 let writeSummary: WriteSummaryFn | null = null;
 let getDb: (() => import('better-sqlite3').Database) | null = null;
@@ -128,5 +134,46 @@ describeMaybe('writeSummary — history badge', () => {
     const md = writeSummary!(results, 10, 'pipe-badge-4');
     assert.ok(md.includes('Seen **4×** in recent history'), 'failure-a should show Seen 4×');
     assert.ok(md.includes('🆕 First occurrence'), 'failure-b should show First occurrence');
+  });
+});
+
+// ── cluster Jira rendering ────────────────────────────────────────────────────
+
+describeMaybe('writeSummary — cluster Jira action lines', () => {
+  it('one cluster Jira covering N tests renders as "1 Jira created" plus scope, not "N Jiras"', () => {
+    const result = makeResult({ testName: 'fresh-test', errorHash: 'fresh-hash' });
+    const md = writeSummary!([result], 10, 'pipe-cluster-1', {
+      jirasCreated: [
+        { testName: 'HTTP 404s in checkout', category: TriageCategory.REGRESSION, key: 'QA-100', clusterSize: 24 },
+      ],
+    });
+    assert.ok(md.includes('**1 Jira created:**'),       'should show 1 Jira, not 24');
+    assert.ok(!md.includes('**24 Jiras created:**'),   'must not inflate count by clusterSize');
+    assert.ok(md.includes('(24 tests)'),               'should surface cluster scope next to the key');
+    assert.ok(md.includes('covering **24 tests**'),    'should include a total-affected suffix');
+  });
+
+  it('two cluster Jiras sum their clusterSize for the covering-tests suffix', () => {
+    const result = makeResult({ testName: 'fresh-test', errorHash: 'fresh-hash' });
+    const md = writeSummary!([result], 10, 'pipe-cluster-2', {
+      jirasCreated: [
+        { testName: 'HTTP 404s in checkout', category: TriageCategory.REGRESSION, key: 'QA-100', clusterSize: 24 },
+        { testName: 'Auth failures',         category: TriageCategory.ENV_ISSUE,  key: 'QA-101', clusterSize: 10 },
+      ],
+    });
+    assert.ok(md.includes('**2 Jiras created:**'));
+    assert.ok(md.includes('covering **34 tests**'), 'covering suffix should sum cluster sizes (24 + 10)');
+  });
+
+  it('per-failure Jira (no clusterSize) renders exactly as before — no "(N tests)" scope', () => {
+    const result = makeResult({ testName: 'fresh-test', errorHash: 'fresh-hash' });
+    const md = writeSummary!([result], 10, 'pipe-cluster-3', {
+      jirasCreated: [
+        { testName: 'single test name', category: TriageCategory.REGRESSION, key: 'QA-200' },
+      ],
+    });
+    assert.ok(md.includes('**1 Jira created:**'));
+    assert.ok(!md.includes('(1 tests)'),          'single-test Jira should not show (1 tests)');
+    assert.ok(!md.includes('covering **'),        'single-test Jira should not show covering-tests suffix');
   });
 });

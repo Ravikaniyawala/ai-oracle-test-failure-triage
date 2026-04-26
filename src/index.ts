@@ -15,14 +15,18 @@ import {
   saveAgentProposal,
   updateAgentProposalStatus,
   getPatternStats,
+  getClusterHistoryStats,
   savePrContext,
 } from './state-store.js';
-import { createJiraDefect } from './jira-writer.js';
+import { createClusterJiraDefect } from './jira-writer.js';
 import { postSlackSummary } from './slack-notifier.js';
 import { loadInstincts } from './instinct-loader.js';
 import { writeSummary } from './summary-writer.js';
 import { postPrComment } from './pr-commenter.js';
-import { proposeFailureActions, proposeRunActions, decide, decideAgentProposal } from './policy-engine.js';
+import { proposeFailureActions, proposeClusterActions, proposeRunActions, decide, decideAgentProposal } from './policy-engine.js';
+import { aggregateClusterStats, clusterDisplayTitle, clusterFailures } from './failure-clusterer.js';
+import { detectCrossClusterSignals } from './cross-cluster-signals.js';
+import { writeDecisionSummary } from './decision-summary-writer.js';
 import { ingestFeedback } from './feedback-processor.js';
 import { loadAgentProposals } from './agent-proposal-loader.js';
 import { writeHeldActions } from './held-actions-writer.js';
@@ -158,7 +162,10 @@ async function main(): Promise<void> {
         const outcome = executeRetry(proposal.testName);
 
         // Record execution result in the shared actions ledger.
-        recordActionExecution(agentDecision.fingerprint, {
+        // Uses AGENT_MODE_RUN_ID — agent proposals are decided outside of any
+        // specific triage run, so they share the fixed AGENT_MODE_RUN_ID
+        // that saveAction() also used above.
+        recordActionExecution(AGENT_MODE_RUN_ID, agentDecision.fingerprint, {
           ok:        outcome === 'passed',
           detail:    outcome === 'skipped'
             ? 'skipped:no_retry_command'
@@ -187,7 +194,7 @@ async function main(): Promise<void> {
 
       if (proposal.proposalType === 'request_human_review') {
         // Low-risk acknowledgement only — no external side effect.
-        recordActionExecution(agentDecision.fingerprint, {
+        recordActionExecution(AGENT_MODE_RUN_ID, agentDecision.fingerprint, {
           ok:        true,
           detail:    'request_human_review acknowledged',
           timestamp: new Date().toISOString(),
@@ -351,48 +358,93 @@ async function main(): Promise<void> {
       }
     }
 
-    // 3. Propose + decide per-failure actions
+    // 2.7. Cluster failures by root cause — one Jira ticket per cluster, not per failure.
+    const clusters = clusterFailures(results, failureIds);
+    console.log(
+      `[oracle] ${clusters.length} cluster(s) from ${results.length} failure(s): ` +
+      clusters.map(c => `"${c.clusterKey}" (${c.failures.length})`).join(', '),
+    );
+
+    // 2.8. Detect cross-cluster signals — shared tokens that suggest a common root cause.
+    const crossSignals = detectCrossClusterSignals(clusters);
+    for (const signal of crossSignals) {
+      console.log(`[oracle] cross-cluster signal: ${signal.description}`);
+    }
+
+    // 3. Propose + decide per-failure actions (retry_test, quarantine, etc.)
+    //    create_jira has moved to step 3.5 at cluster granularity.
     const jiraCreated:  JiraCreated[]    = [];
     const decisionLog:  DecisionEntry[]  = [];
 
     for (let i = 0; i < results.length; i++) {
       const result    = results[i] as TriageResult;
       const failureId = failureIds[i] as number;
-
-      // Stats for this failure are already in patternStatsMap from step 2.5.
       const failureStats = patternStatsMap.get(`${result.testName}:${result.errorHash}`);
 
       for (const proposal of proposeFailureActions(result, failureId, runId, PIPELINE_ID)) {
-        const jiraAlreadyCreated = proposal.type === 'create_jira'
-          ? wasJiraCreatedFor(proposal.fingerprint)
-          : false;
-
         const decision = decide(proposal, result.confidence, {
-          jiraAlreadyCreated,
+          jiraAlreadyCreated: false,
           jiraDuplicateCount: failureStats?.jiraDuplicateCount,
           jiraCreatedCount:   failureStats?.jiraCreatedCount,
         });
         const inserted = saveAction(runId, proposal, decision);
-
         if (!inserted) {
           console.log(`[oracle] skipping duplicate action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
           continue;
         }
-
-        // Build explanation and collect for summary artifact (all decisions).
         const explanation = explainDecision(proposal.type, decision.verdict, decision.reason, failureStats);
         decisionLog.push({ actionType: proposal.type, verdict: decision.verdict, reason: decision.reason, testName: result.testName, explanation });
-
-        // Log notable decisions only — keeps CI output readable.
         if (isNotable(decision.verdict, decision.reason)) {
           console.log(`[decision] ${explanation} — ${result.testName}`);
+        }
+      }
+    }
+
+    // 3.5. Propose + decide cluster-level Jira actions (one per root-cause cluster).
+    //
+    // Cluster-level suppression needs the whole cluster's history, not a single
+    // representative — but the aggregation has to avoid double-counting
+    // cluster-scoped rows. `patternStatsMap` is cluster-aware (each member
+    // sees the same cluster Jira in its own history), so summing it would
+    // multiply cluster rows by member count. Instead we build a parallel
+    // `perFailureStatsMap` with `includeClusterScoped: false`, then add the
+    // cluster's own history exactly once via `getClusterHistoryStats`.
+    const perFailureStatsMap = new Map<string, PatternStats>();
+    for (const result of results) {
+      perFailureStatsMap.set(
+        `${result.testName}:${result.errorHash}`,
+        getPatternStats(result.testName, result.errorHash, { includeClusterScoped: false }),
+      );
+    }
+
+    for (const cluster of clusters) {
+      const clusterHistoryStats = getClusterHistoryStats(cluster.clusterKey);
+      const clusterStats        = aggregateClusterStats(cluster, perFailureStatsMap, clusterHistoryStats);
+
+      for (const proposal of proposeClusterActions(cluster, runId, PIPELINE_ID)) {
+        const jiraAlreadyCreated = wasJiraCreatedFor(proposal.fingerprint);
+        const decision = decide(proposal, cluster.confidence, {
+          jiraAlreadyCreated,
+          jiraDuplicateCount: clusterStats.jiraDuplicateCount,
+          jiraCreatedCount:   clusterStats.jiraCreatedCount,
+        });
+        const inserted = saveAction(runId, proposal, decision);
+        if (!inserted) {
+          console.log(`[oracle] skipping duplicate cluster action ${proposal.type} (fingerprint ${proposal.fingerprint})`);
+          continue;
+        }
+        const explanation = explainDecision(proposal.type, decision.verdict, decision.reason, clusterStats);
+        const clusterLabel = `cluster "${cluster.clusterKey}" (${cluster.failures.length} test(s))`;
+        decisionLog.push({ actionType: proposal.type, verdict: decision.verdict, reason: decision.reason, testName: clusterLabel, explanation });
+        if (isNotable(decision.verdict, decision.reason)) {
+          console.log(`[decision] ${explanation} — ${clusterLabel}`);
         }
 
         if (decision.verdict !== 'approved') continue;
 
         if (proposal.type === 'create_jira') {
-          const jiraResult = await createJiraDefect(result, proposal.fingerprint);
-          recordActionExecution(proposal.fingerprint, {
+          const jiraResult = await createClusterJiraDefect(cluster, proposal.fingerprint);
+          recordActionExecution(runId, proposal.fingerprint, {
             ok:        jiraResult !== null,
             detail:    jiraResult
               ? (jiraResult.wasExisting
@@ -401,10 +453,16 @@ async function main(): Promise<void> {
               : 'create_jira failed or skipped',
             timestamp: new Date().toISOString(),
           });
-          // Only count genuinely new issues — reused existing keys are not
-          // new creations and must not inflate 'Jiras created' metrics.
           if (jiraResult !== null && !jiraResult.wasExisting) {
-            jiraCreated.push({ testName: result.testName, category: result.category, key: jiraResult.key });
+            // One cluster Jira → one JiraCreated entry (not one per member).
+            // Scope is conveyed via clusterSize so Slack/summary render
+            // "N tests" accurately instead of inflating the Jira count.
+            jiraCreated.push({
+              testName:    clusterDisplayTitle(cluster.jiraTitle),
+              category:    cluster.category,
+              key:         jiraResult.key,
+              clusterSize: cluster.failures.length,
+            });
           }
         }
       }
@@ -437,7 +495,7 @@ async function main(): Promise<void> {
           .map(d => d.testName ? `${d.explanation} — ${d.testName.slice(0, 60)}` : d.explanation);
 
         await postSlackSummary(results, jiraCreated, PIPELINE_ID, highlights);
-        recordActionExecution(proposal.fingerprint, {
+        recordActionExecution(runId, proposal.fingerprint, {
           ok:        true,
           detail:    'slack posted',
           timestamp: new Date().toISOString(),
@@ -452,6 +510,7 @@ async function main(): Promise<void> {
       jirasCreated:    jiraCreated,
       slackPosted,
       suppressionCount,
+      crossSignals,
     });
     await postPrComment(markdown);
 
@@ -488,7 +547,12 @@ async function main(): Promise<void> {
     }
 
     // 7. Decision summary artifact
-    writeDecisionSummary(decisionLog, PIPELINE_ID, parsed.totalFailures, prContext, relevanceMap, results);
+    writeDecisionSummary(decisionLog, PIPELINE_ID, parsed.totalFailures, {
+      prContext,
+      relevanceMap,
+      results,
+      crossSignals,
+    });
 
     console.log('[oracle] triage complete', summary);
   } catch (err) {
@@ -610,108 +674,6 @@ function logPatternStats(testName: string, errorHash: string, stats: PatternStat
   console.log(`  actions=${stats.actionCount}  jira_created=${stats.jiraCreatedCount}  jira_duplicates=${stats.jiraDuplicateCount}  retry_passed=${stats.retryPassedCount}  retry_failed=${stats.retryFailedCount}`);
 }
 
-/**
- * Write oracle-decision-summary.md — a human-readable artifact grouping all
- * decisions by verdict and highlighting history-influenced ones.
- *
- * Sections: Approved · Rejected · Held · History-influenced · PR/Change Context
- * Skipped when decisionLog is empty.
- */
-function writeDecisionSummary(
-  decisionLog:   DecisionEntry[],
-  pipelineId:    string,
-  totalFailures: number,
-  prContext?:    PrContext | null,
-  relevanceMap?: Map<string, PrRelevance>,
-  results?:      TriageResult[],
-): void {
-  if (decisionLog.length === 0) return;
-
-  const approved   = decisionLog.filter(d => d.verdict === 'approved');
-  const rejected   = decisionLog.filter(d => d.verdict === 'rejected');
-  const held       = decisionLog.filter(d => d.verdict === 'held');
-  const historical = decisionLog.filter(d => d.reason.startsWith('history:'));
-
-  const entryLine = (d: DecisionEntry): string =>
-    `- \`${d.actionType}\`${d.testName ? ` for "${d.testName}"` : ''} — ${d.explanation.replace(/^[^ ]+ [^ ]+ — /, '')}`;
-
-  const section = (title: string, entries: DecisionEntry[]): string => {
-    const header = `## ${title} (${entries.length})`;
-    if (entries.length === 0) return `${header}\n_none_`;
-    return `${header}\n${entries.map(entryLine).join('\n')}`;
-  };
-
-  const lines = [
-    `# Oracle Decision Summary — Pipeline ${pipelineId}`,
-    '',
-    `> ${totalFailures} failure(s) triaged · ${new Date().toISOString()}`,
-    '',
-    section('Approved', approved),
-    '',
-    section('Rejected', rejected),
-    '',
-    section('Held', held),
-    '',
-    section('History-influenced', historical),
-    '',
-  ];
-
-  // PR / Change Context section — only when PR context was loaded.
-  if (prContext !== null && prContext !== undefined) {
-    lines.push('## PR / Change Context');
-    lines.push('');
-
-    const meta: string[] = [];
-    if (prContext.prNumber !== undefined) meta.push(`PR #${prContext.prNumber}`);
-    if (prContext.title    !== undefined) meta.push(`"${prContext.title}"`);
-    if (prContext.author   !== undefined) meta.push(`by ${prContext.author}`);
-    if (meta.length > 0) lines.push(`**${meta.join(' · ')}**`);
-
-    lines.push('');
-    lines.push(`**${prContext.filesChanged.length} file(s) changed** in this PR.`);
-
-    if (prContext.linkedJira.length > 0) {
-      lines.push('');
-      lines.push('**Linked Jira issues:**');
-      for (const j of prContext.linkedJira) {
-        const meta: string[] = [];
-        if (j.issueType !== undefined) meta.push(j.issueType);
-        if (j.team      !== undefined) meta.push(j.team);
-        const metaSuffix  = meta.length > 0 ? ` (${meta.join(' · ')})` : '';
-        const titleSuffix = j.title !== undefined ? ` — ${j.title}` : '';
-        lines.push(`- \`${j.key}\`${metaSuffix}${titleSuffix}`);
-      }
-    }
-
-    // Per-failure relevance breakdown.
-    if (relevanceMap !== undefined && results !== undefined && results.length > 0) {
-      const highOrMedium = results.filter(r => {
-        const rel = relevanceMap.get(`${r.testName}:${r.errorHash}`);
-        return rel?.level === 'high' || rel?.level === 'medium';
-      });
-
-      lines.push('');
-      lines.push('**Failure relevance to this PR:**');
-
-      if (highOrMedium.length === 0) {
-        lines.push('_No failures have high or medium relevance to the changed files._');
-      } else {
-        for (const r of highOrMedium) {
-          const rel = relevanceMap.get(`${r.testName}:${r.errorHash}`) as PrRelevance;
-          const reason = rel.reasons.length > 0 ? ` — ${rel.reasons[0]}` : '';
-          lines.push(`- **${rel.level.toUpperCase()}** \`${r.testName}\`${reason}`);
-        }
-      }
-    }
-
-    lines.push('');
-    lines.push('> ℹ️ PR context is informational only — it does not influence any Oracle decisions.');
-    lines.push('');
-  }
-
-  writeFileSync(DECISION_SUMMARY_PATH, lines.join('\n'));
-  console.log(`[oracle] decision summary written to ${DECISION_SUMMARY_PATH} (${decisionLog.length} decision(s))`);
-}
 
 // ── Summary helper ────────────────────────────────────────────────────────────
 

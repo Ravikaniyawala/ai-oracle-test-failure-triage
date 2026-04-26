@@ -7,6 +7,7 @@ import {
   type AgentDecision,
   type AgentProposal,
   type Decision,
+  type FailureCluster,
   type PatternStats,
   type TriageResult,
 } from './types.js';
@@ -24,12 +25,12 @@ export function computeFingerprint(type: string, scope: string, scopeId: string)
 
 /**
  * Propose actions for a single triaged failure.
- * Step 1 rules (only executable actions are emitted):
- *   - create_jira → REGRESSION or NEW_BUG with confidence > 0.7
+ *
+ * NOTE: create_jira is no longer emitted here — it is now proposed at cluster
+ * granularity via proposeClusterActions() so that failures sharing the same
+ * root cause produce a single Jira ticket rather than one per failure.
  *
  * quarantine_test is intentionally omitted — no executor exists yet.
- * Fingerprints are keyed on testName + errorHash (not the DB row id) so they
- * remain stable across re-runs of the same pipeline.
  */
 export function proposeFailureActions(
   result: TriageResult,
@@ -37,24 +38,51 @@ export function proposeFailureActions(
   runId: number,
   pipelineId: string,
 ): ActionProposal[] {
+  // Reserved for per-failure actions (retry_test, quarantine_test, etc.)
+  // create_jira has moved to proposeClusterActions().
+  void result; void failureId; void runId; void pipelineId;
+  return [];
+}
+
+/**
+ * Propose a create_jira action for each failure cluster.
+ *
+ * Rules:
+ *   - Only clusters whose dominant category is REGRESSION or NEW_BUG with
+ *     mean confidence > 0.7 generate a Jira proposal.
+ *   - The fingerprint is derived from the stable clusterKey so the same root
+ *     cause is deduplicated across pipeline runs.
+ */
+export function proposeClusterActions(
+  cluster:    FailureCluster,
+  runId:      number,
+  pipelineId: string,
+): ActionProposal[] {
   const proposals: ActionProposal[] = [];
-  const stableId = `${result.testName}:${result.errorHash}`;
 
   if (
-    (result.category === TriageCategory.REGRESSION ||
-      result.category === TriageCategory.NEW_BUG) &&
-    result.confidence > 0.7
+    (cluster.category === TriageCategory.REGRESSION ||
+      cluster.category === TriageCategory.NEW_BUG) &&
+    cluster.confidence > 0.7
   ) {
     proposals.push({
       type:        'create_jira',
-      scope:       'failure',
-      scopeId:     stableId,
-      failureId,
-      clusterKey:  null,
+      scope:       'cluster',
+      scopeId:     cluster.clusterKey,
+      failureId:   null,
+      clusterKey:  cluster.clusterKey,
       runId,
       pipelineId,
       source:      'policy',
-      fingerprint: computeFingerprint('create_jira', 'failure', stableId),
+      fingerprint: cluster.fingerprint,
+      // Persist cluster membership so getPatternStats() can credit each
+      // member with the cluster's jira_created / duplicate history on
+      // later runs. Without this list, history-based suppression gradually
+      // stops learning from clustered tickets.
+      clusterMembers: cluster.failures.map(f => ({
+        testName:  f.testName,
+        errorHash: f.errorHash,
+      })),
     });
   }
 

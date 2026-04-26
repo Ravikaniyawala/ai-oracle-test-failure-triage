@@ -36,7 +36,8 @@ export async function postSlackSummary(
   if (jiraCreated.length > 0) {
     lines.push('', '*Jira defects created:*');
     for (const f of jiraCreated) {
-      lines.push(`• [${f.key}] ${f.testName.slice(0, 80)} (${f.category})`);
+      const scope = f.clusterSize && f.clusterSize > 1 ? ` — ${f.clusterSize} tests` : '';
+      lines.push(`• [${f.key}] ${f.testName.slice(0, 80)}${scope} (${f.category})`);
     }
   }
 

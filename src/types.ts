@@ -53,6 +53,35 @@ export interface TriageApiResponse {
   }>;
 }
 
+// ── Failure clustering ────────────────────────────────────────────────────────
+
+/**
+ * A group of failures that share the same root cause and should map to a
+ * single Jira ticket rather than one ticket per failure.
+ *
+ * Solo clusters (one failure that doesn't match any grouping rule) are still
+ * modelled as a cluster with failures.length === 1 so the rest of the pipeline
+ * can treat all Jira proposals uniformly.
+ */
+export interface FailureCluster {
+  /** Stable human-readable key that identifies the root cause. */
+  clusterKey:  string;
+  /** 16-char hex fingerprint derived from clusterKey — used for Jira dedup. */
+  fingerprint: string;
+  /** Dominant category across member failures. */
+  category:    TriageCategory;
+  /** Mean confidence of member failures. */
+  confidence:  number;
+  /** The failures belonging to this cluster. */
+  failures:    TriageResult[];
+  /** Corresponding SQLite failure row IDs (parallel to failures[]). */
+  failureIds:  number[];
+  /** Ready-to-use Jira ticket title. */
+  jiraTitle:   string;
+  /** Multi-line Jira description listing root cause + all affected tests. */
+  jiraBody:    string;
+}
+
 // ── Policy / orchestration types ─────────────────────────────────────────────
 
 export type ActionType =
@@ -75,6 +104,15 @@ export interface ActionProposal {
   pipelineId:  string;
   source:      'policy' | 'agent';
   fingerprint: string;
+  /**
+   * For scope='cluster' proposals, the (testName, errorHash) pairs of every
+   * failure that belonged to the cluster when the proposal was emitted.
+   * Persisted into actions.payload_json so that getPatternStats() can surface
+   * cluster-level Jira history per member on later runs — otherwise the
+   * cluster-scoped scopeId (`<clusterKey>`) would be invisible to the
+   * per-failure `<testName>:<errorHash>` scopeId lookup.
+   */
+  clusterMembers?: Array<{ testName: string; errorHash: string }>;
 }
 
 export interface Decision {
@@ -91,9 +129,16 @@ export interface ActionExecution {
 }
 
 export interface JiraCreated {
+  /** Display label — for cluster-sourced Jiras this is the human-readable
+   *  cluster title (not a single test name). Kept as `testName` for
+   *  backwards compatibility with the original per-failure Jira flow. */
   testName: string;
   category: TriageCategory;
   key:      string;
+  /** Number of failing tests covered by this Jira. 1 for per-failure Jiras;
+   *  >1 when the Jira was raised for a cluster. Used by Slack/summary to
+   *  show "[KEY] title (N tests)" accurately. Absent or 1 → single test. */
+  clusterSize?: number;
 }
 
 // ── History / explainability types ───────────────────────────────────────────

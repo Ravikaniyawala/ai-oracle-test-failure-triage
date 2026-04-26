@@ -53,7 +53,7 @@ export function initDb(): void {
       cluster_key        TEXT,
       scope              TEXT    NOT NULL,
       action_type        TEXT    NOT NULL,
-      action_fingerprint TEXT    NOT NULL UNIQUE,
+      action_fingerprint TEXT    NOT NULL,
       source             TEXT    NOT NULL DEFAULT 'policy',
       verdict            TEXT    NOT NULL,
       payload_json       TEXT,
@@ -65,7 +65,11 @@ export function initDb(): void {
       execution_ok       INTEGER,
       execution_detail   TEXT,
       FOREIGN KEY (run_id)     REFERENCES runs(id),
-      FOREIGN KEY (failure_id) REFERENCES failures(id)
+      FOREIGN KEY (failure_id) REFERENCES failures(id),
+      -- Uniqueness is per-run so that re-considering the same action on a
+      -- later run still records an audit row (e.g. "rejected by history
+      -- because this Jira was already created on a prior run").
+      UNIQUE (run_id, action_fingerprint)
     );
     CREATE TABLE IF NOT EXISTS feedback (
       id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,16 +220,21 @@ export function saveAction(
 
 /**
  * Record the outcome of executing an action identified by its fingerprint.
+ *
+ * Scoped to `runId` so that with per-run uniqueness on (run_id, fingerprint),
+ * we only update the current run's row — prior runs' audit rows are left
+ * untouched. That preserves cross-run history for wasJiraCreatedFor().
  */
 export function recordActionExecution(
+  runId:       number,
   fingerprint: string,
-  exec: ActionExecution,
+  exec:        ActionExecution,
 ): void {
   db.prepare(
     `UPDATE actions
      SET executed_at = ?, execution_ok = ?, execution_detail = ?
-     WHERE action_fingerprint = ?`
-  ).run(exec.timestamp, exec.ok ? 1 : 0, exec.detail, fingerprint);
+     WHERE run_id = ? AND action_fingerprint = ?`
+  ).run(exec.timestamp, exec.ok ? 1 : 0, exec.detail, runId, fingerprint);
 }
 
 /**
@@ -320,32 +329,69 @@ export function updateAgentProposalStatus(
 /**
  * Compute historical pattern stats for a failure identified by testName + errorHash.
  *
- * actionCount        — total action rows recorded for this testName:errorHash pair
+ * actionCount        — total action rows recorded for this testName:errorHash pair,
+ *                      optionally PLUS cluster-scoped actions whose clusterMembers
+ *                      contained this (testName, errorHash)
  * jiraCreatedCount   — create_jira actions that executed successfully
  * jiraDuplicateCount — distinct feedback rows marked jira_closed_duplicate,
  *                      matched by test_name+error_hash OR by action_fingerprint
- *                      of any action associated with this pattern
+ *                      of any action linked to this pattern
  * retryPassedCount   — feedback rows marked retry_passed for this pattern
  * retryFailedCount   — feedback rows marked retry_failed for this pattern
+ *
+ * Cluster-aware history (default): `scopeId` lookups also OR-match against
+ * cluster-scoped actions whose `payload_json.clusterMembers[]` includes
+ * this (testName, errorHash). Use this for per-failure explainability and
+ * per-failure decisions — callers see the full history the failure has
+ * accumulated, including time it was part of a cluster Jira.
+ *
+ * Per-failure-only mode (`includeClusterScoped: false`): only matches rows
+ * whose `scopeId = <testName>:<errorHash>`. Use this when aggregating across
+ * an entire cluster — otherwise each member would see (and the aggregator
+ * would then sum) the same cluster-level row once per member.
  *
  * Slice 3.1: used for explainability logging and oracle-verdict.json output.
  * Slice 3.2: jiraDuplicateCount/jiraCreatedCount and retryPassedCount/retryFailedCount
  * are passed into the policy engine to influence a small set of decisions explicitly.
  */
-export function getPatternStats(testName: string, errorHash: string): PatternStats {
-  const scopeId = `${testName}:${errorHash}`;
+export function getPatternStats(
+  testName:  string,
+  errorHash: string,
+  options:   { includeClusterScoped?: boolean } = {},
+): PatternStats {
+  const includeClusterScoped = options.includeClusterScoped ?? true;
+  const scopeId              = `${testName}:${errorHash}`;
+
+  // A row counts as "linked to this pattern" if EITHER:
+  //   (a) its scopeId is the per-failure scopeId "<testName>:<errorHash>", OR
+  //   (b) (cluster-aware mode only) it is a cluster action whose
+  //       payload_json.clusterMembers contains an entry matching this
+  //       (testName, errorHash).
+  //
+  // (b) is expressed with EXISTS + json_each so a failure that belonged to a
+  // cluster in a prior run still sees that cluster's Jira history.
+  const linkedClause = includeClusterScoped
+    ? `(
+           json_extract(payload_json, '$.scopeId') = @scopeId
+        OR EXISTS (
+             SELECT 1
+             FROM json_each(json_extract(payload_json, '$.clusterMembers')) AS m
+             WHERE json_extract(m.value, '$.testName')  = @testName
+               AND json_extract(m.value, '$.errorHash') = @errorHash
+           )
+      )`
+    : `json_extract(payload_json, '$.scopeId') = @scopeId`;
 
   const actionCount = (db.prepare(
-    `SELECT COUNT(*) as count FROM actions
-     WHERE json_extract(payload_json, '$.scopeId') = ?`,
-  ).get(scopeId) as { count: number }).count;
+    `SELECT COUNT(*) as count FROM actions WHERE ${linkedClause}`,
+  ).get({ scopeId, testName, errorHash }) as { count: number }).count;
 
   const jiraCreatedCount = (db.prepare(
     `SELECT COUNT(*) as count FROM actions
      WHERE action_type = 'create_jira'
        AND execution_ok = 1
-       AND json_extract(payload_json, '$.scopeId') = ?`,
-  ).get(scopeId) as { count: number }).count;
+       AND ${linkedClause}`,
+  ).get({ scopeId, testName, errorHash }) as { count: number }).count;
 
   // COUNT(DISTINCT id) prevents double-counting if a feedback row matches both
   // the test_name+error_hash condition and the action_fingerprint subquery.
@@ -354,13 +400,12 @@ export function getPatternStats(testName: string, errorHash: string): PatternSta
      FROM feedback f
      WHERE f.feedback_type = 'jira_closed_duplicate'
        AND (
-         (f.test_name = ? AND f.error_hash = ?)
+         (f.test_name = @testName AND f.error_hash = @errorHash)
          OR f.action_fingerprint IN (
-           SELECT action_fingerprint FROM actions
-           WHERE json_extract(payload_json, '$.scopeId') = ?
+           SELECT action_fingerprint FROM actions WHERE ${linkedClause}
          )
        )`,
-  ).get(testName, errorHash, scopeId) as { count: number }).count;
+  ).get({ scopeId, testName, errorHash }) as { count: number }).count;
 
   const retryPassedCount = (db.prepare(
     `SELECT COUNT(*) as count FROM feedback
@@ -375,6 +420,58 @@ export function getPatternStats(testName: string, errorHash: string): PatternSta
   ).get(testName, errorHash) as { count: number }).count;
 
   return { actionCount, jiraCreatedCount, jiraDuplicateCount, retryPassedCount, retryFailedCount };
+}
+
+/**
+ * Historical stats for a single cluster identified by its stable `clusterKey`.
+ *
+ * Matches actions whose `scopeId = @clusterKey` — i.e. the cluster-scoped
+ * create_jira proposals themselves — NOT expanded via `clusterMembers[]`.
+ *
+ * Intended for `aggregateClusterStats()` to add cluster-level history exactly
+ * once, after summing per-failure-only stats across cluster members. Without
+ * this separation, each member surfaces the same historical cluster Jira via
+ * cluster-aware `getPatternStats`, and summing across N members inflates the
+ * count N× — tripping the `history:duplicate_pattern` suppression threshold
+ * after a single prior duplicate cluster ticket.
+ *
+ * retryPassedCount/retryFailedCount are always 0 here — retry feedback is
+ * per-test, never cluster-scoped.
+ */
+export function getClusterHistoryStats(clusterKey: string): PatternStats {
+  const clusterClause = `json_extract(payload_json, '$.scopeId') = @clusterKey`;
+
+  const actionCount = (db.prepare(
+    `SELECT COUNT(*) as count FROM actions WHERE ${clusterClause}`,
+  ).get({ clusterKey }) as { count: number }).count;
+
+  const jiraCreatedCount = (db.prepare(
+    `SELECT COUNT(*) as count FROM actions
+     WHERE action_type = 'create_jira'
+       AND execution_ok = 1
+       AND ${clusterClause}`,
+  ).get({ clusterKey }) as { count: number }).count;
+
+  // jira_closed_duplicate feedback tied to any cluster-scoped action row for
+  // this clusterKey. Per-test test_name+error_hash feedback is intentionally
+  // NOT matched here — that belongs to the per-failure bucket so it isn't
+  // counted twice when aggregator sums both streams.
+  const jiraDuplicateCount = (db.prepare(
+    `SELECT COUNT(DISTINCT f.id) as count
+     FROM feedback f
+     WHERE f.feedback_type = 'jira_closed_duplicate'
+       AND f.action_fingerprint IN (
+         SELECT action_fingerprint FROM actions WHERE ${clusterClause}
+       )`,
+  ).get({ clusterKey }) as { count: number }).count;
+
+  return {
+    actionCount,
+    jiraCreatedCount,
+    jiraDuplicateCount,
+    retryPassedCount: 0,
+    retryFailedCount: 0,
+  };
 }
 
 /**

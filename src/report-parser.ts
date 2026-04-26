@@ -227,6 +227,14 @@ function parseJUnitXml(content: string): ParseResult {
     attributeNamePrefix: '@_',
     textNodeName:        '#text',
     isArray: (tagName: string) => tagName === 'testsuite' || tagName === 'testcase',
+    // Large JUnit reports (300+ tests with HTML-encoded names like &gt;/&amp;) can
+    // exceed fast-xml-parser's default entity expansion limit of 1000.
+    // maxTotalExpansions lives inside the processEntities config object.
+    processEntities: {
+      enabled:            true,
+      maxTotalExpansions: 100_000,
+      maxExpandedLength:  10_000_000,
+    } as unknown as boolean,
   });
 
   let raw: Record<string, unknown>;
