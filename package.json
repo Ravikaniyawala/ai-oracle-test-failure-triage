@@ -10,7 +10,7 @@
     "triage": "tsx src/index.ts",
     "triage:dry": "DRY_RUN=true tsx src/index.ts",
     "learn": "tsx src/learn.ts",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "find tests -name '*.test.ts' -type f -print0 | xargs -0 tsx --test",
     "test:live": "tsx --test tests/triage.test.ts",
     "dashboard": "npm run dashboard:build && node dist/src/dashboard-server.js",
     "dashboard:dev": "tsx src/dashboard-server.ts",
