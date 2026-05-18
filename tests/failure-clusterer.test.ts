@@ -342,11 +342,14 @@ describe('dominantCategory', () => {
 
 function makeStats(overrides: Partial<PatternStats> = {}): PatternStats {
   return {
-    actionCount:        0,
-    jiraCreatedCount:   0,
-    jiraDuplicateCount: 0,
-    retryPassedCount:   0,
-    retryFailedCount:   0,
+    actionCount:          0,
+    jiraCreatedCount:     0,
+    jiraDuplicateCount:   0,
+    retryPassedCount:     0,
+    retryFailedCount:     0,
+    agentFixAppliedCount: 0,
+    agentFixFailedCount:  0,
+    lastAgentFixApplied:  null,
     ...overrides,
   };
 }
