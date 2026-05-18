@@ -41,6 +41,7 @@ import {
   type AutofixDecisionOutcome,
 } from './autofix-policy.js';
 import { writeAutofixQueue } from './autofix-queue-writer.js';
+import { loadFailureContext, lookupFailureContext } from './autofix-aria-loader.js';
 import {
   DEFAULT_ALLOWED_EDIT_PATHS,
   DEFAULT_PRODUCT_SOURCE_PATTERNS,
@@ -80,6 +81,7 @@ const SNAPSHOT_ROOT         = process.env['ORACLE_SNAPSHOT_ROOT'] ?? './oracle-s
 const DB_PATH               = process.env['ORACLE_STATE_DB_PATH'] ?? './oracle-state.db';
 const AUTOFIX_QUEUE_PATH    = process.env['ORACLE_AUTOFIX_QUEUE_PATH']   ?? 'oracle-autofix-queue.json';
 const REPO_ROOT             = process.env['ORACLE_REPO_ROOT']            ?? process.cwd();
+const FAILURE_CONTEXT_PATH  = process.env['ORACLE_FAILURE_CONTEXT_PATH'] ?? 'test-results/failure-context';
 
 const REPO_IDENTITY = resolveRepoIdentity();
 if (REPO_IDENTITY) {
@@ -418,6 +420,22 @@ async function main(): Promise<void> {
       );
     }
 
+    // Load per-failure ARIA / artifact context written by the consumer's
+    // Playwright reporter. The detector uses this evidence to classify
+    // locator drift. Missing dir or malformed entries are non-fatal —
+    // the detector gracefully degrades to "no ARIA" → hold via the
+    // existing repairability gates.
+    const failureContextLoaded = AUTOFIX_MODE === 'off'
+      ? { byKey: new Map(), scanned: 0, loaded: 0, skipped: [] }
+      : loadFailureContext({ rootPath: FAILURE_CONTEXT_PATH });
+    if (AUTOFIX_MODE !== 'off') {
+      console.log(
+        `[oracle] failure-context loader: scanned=${failureContextLoaded.scanned} ` +
+        `loaded=${failureContextLoaded.loaded} skipped=${failureContextLoaded.skipped.length} ` +
+        `(${FAILURE_CONTEXT_PATH})`,
+      );
+    }
+
     const autofixOutcomes: Array<AutofixDecisionOutcome & { result: TriageResult }> = [];
     let approvedAutofixCount = 0;
 
@@ -447,6 +465,18 @@ async function main(): Promise<void> {
       // ── Autofix: fix_test_with_agent gate (Phase 1 PR 2) ────────────────
       // Returns null when mode=off, category != FLAKY, or no proposal
       // emerges. Existing consumers see no behavior change at mode=off.
+      //
+      // Per-failure ARIA + artifact context is looked up from the
+      // consumer's Playwright reporter output (Phase 1 PR 3 wiring).
+      // When the consumer hasn't shipped a reporter, the lookup
+      // returns undefined and the detector classifies as null →
+      // routes to hold via the existing repairability gates.
+      const ctx = lookupFailureContext(
+        failureContextLoaded,
+        result.testName,
+        result.errorHash,
+        result.file,
+      );
       const outcome = runAutofixPolicy({
         result,
         failureId,
@@ -465,10 +495,8 @@ async function main(): Promise<void> {
         productSourcePatterns:  DEFAULT_PRODUCT_SOURCE_PATTERNS,
         matchPattern:           (file, pattern) => picomatch(pattern, { dot: true })(file),
         testAttributeNames:     DEFAULT_TEST_ATTRIBUTE_NAMES,
-        // ariaSnapshot + artifactTrustLevel are populated by the custom
-        // Playwright reporter sidecar (Phase 0). Phase 1 PR 2 ships
-        // without that wiring; the detector gracefully degrades when
-        // ARIA is unavailable (returns kind=null → routes to hold).
+        ariaSnapshot:           ctx?.ariaSnapshot,
+        artifactTrustLevel:     ctx?.artifactTrustLevel,
         alreadyApprovedThisRun: approvedAutofixCount,
         maxAutoHealsPerRun:     MAX_AUTOHEALS_PER_RUN,
       });
