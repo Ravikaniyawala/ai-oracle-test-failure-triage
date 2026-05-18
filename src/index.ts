@@ -33,6 +33,21 @@ import { writeHeldActions } from './held-actions-writer.js';
 import { explainDecision, isNotable } from './decision-explainer.js';
 import { loadPrContext } from './pr-context-loader.js';
 import { getPrRelevance } from './pr-relevance.js';
+import picomatch from 'picomatch';
+import {
+  readAutofixModeFromEnv,
+  readMaxAutoHealsPerRun,
+  runAutofixPolicy,
+  type AutofixDecisionOutcome,
+} from './autofix-policy.js';
+import { writeAutofixQueue } from './autofix-queue-writer.js';
+import {
+  DEFAULT_ALLOWED_EDIT_PATHS,
+  DEFAULT_PRODUCT_SOURCE_PATTERNS,
+  DEFAULT_TEST_ATTRIBUTE_NAMES,
+  type RepoTopology,
+} from './autofix-detector/types.js';
+import { validateTopology, topologyAllowsAuto } from './autofix-detector/topology-validator.js';
 import {
   TriageCategory,
   type ActionProposal,
@@ -63,6 +78,8 @@ const VERDICT_PATH          = process.env['ORACLE_VERDICT_PATH']          ?? 'or
 const DECISION_SUMMARY_PATH = process.env['ORACLE_DECISION_SUMMARY_PATH'] ?? 'oracle-decision-summary.md';
 const SNAPSHOT_ROOT         = process.env['ORACLE_SNAPSHOT_ROOT'] ?? './oracle-snapshots';
 const DB_PATH               = process.env['ORACLE_STATE_DB_PATH'] ?? './oracle-state.db';
+const AUTOFIX_QUEUE_PATH    = process.env['ORACLE_AUTOFIX_QUEUE_PATH']   ?? 'oracle-autofix-queue.json';
+const REPO_ROOT             = process.env['ORACLE_REPO_ROOT']            ?? process.cwd();
 
 const REPO_IDENTITY = resolveRepoIdentity();
 if (REPO_IDENTITY) {
@@ -376,6 +393,34 @@ async function main(): Promise<void> {
     const jiraCreated:  JiraCreated[]    = [];
     const decisionLog:  DecisionEntry[]  = [];
 
+    // ── Autofix mode + topology resolution (Phase 1 PR 2) ─────────────────
+    // Defaults to 'off' for every existing Oracle consumer — see
+    // src/autofix-policy.ts. When off, the per-failure call short-circuits
+    // immediately and the queue artifact is not written.
+    const AUTOFIX_MODE          = readAutofixModeFromEnv();
+    const MAX_AUTOHEALS_PER_RUN = readMaxAutoHealsPerRun();
+    const DECLARED_TOPOLOGY     = (process.env['ORACLE_TEST_REPO_TOPOLOGY'] ?? 'monorepo_e2e') as RepoTopology;
+    const TOPOLOGY = AUTOFIX_MODE === 'off'
+      ? { declared: DECLARED_TOPOLOGY, state: 'partial' as const, allowsAuto: false }
+      : (() => {
+          const v = validateTopology({
+            repoRoot:              REPO_ROOT,
+            declaredTopology:      DECLARED_TOPOLOGY,
+            productSourcePatterns: DEFAULT_PRODUCT_SOURCE_PATTERNS,
+            allowedEditPaths:      DEFAULT_ALLOWED_EDIT_PATHS,
+            matchPattern:          (file, pattern) => picomatch(pattern, { dot: true })(file),
+          });
+          return { declared: v.declared, state: v.state, allowsAuto: topologyAllowsAuto(v) };
+        })();
+    if (AUTOFIX_MODE !== 'off') {
+      console.log(
+        `[oracle] autofix mode=${AUTOFIX_MODE} topology=${TOPOLOGY.declared}/${TOPOLOGY.state} allowsAuto=${TOPOLOGY.allowsAuto}`,
+      );
+    }
+
+    const autofixOutcomes: Array<AutofixDecisionOutcome & { result: TriageResult }> = [];
+    let approvedAutofixCount = 0;
+
     for (let i = 0; i < results.length; i++) {
       const result    = results[i] as TriageResult;
       const failureId = failureIds[i] as number;
@@ -397,6 +442,78 @@ async function main(): Promise<void> {
         if (isNotable(decision.verdict, decision.reason)) {
           console.log(`[decision] ${explanation} — ${result.testName}`);
         }
+      }
+
+      // ── Autofix: fix_test_with_agent gate (Phase 1 PR 2) ────────────────
+      // Returns null when mode=off, category != FLAKY, or no proposal
+      // emerges. Existing consumers see no behavior change at mode=off.
+      const outcome = runAutofixPolicy({
+        result,
+        failureId,
+        runId,
+        pipelineId:             PIPELINE_ID,
+        history:                failureStats ?? {
+          actionCount: 0, jiraCreatedCount: 0, jiraDuplicateCount: 0,
+          retryPassedCount: 0, retryFailedCount: 0,
+          agentFixAppliedCount: 0, agentFixFailedCount: 0,
+          lastAgentFixApplied: null,
+        },
+        mode:                   AUTOFIX_MODE,
+        topology:               TOPOLOGY,
+        prContext:              prContext ?? undefined,
+        allowedEditPaths:       DEFAULT_ALLOWED_EDIT_PATHS,
+        productSourcePatterns:  DEFAULT_PRODUCT_SOURCE_PATTERNS,
+        matchPattern:           (file, pattern) => picomatch(pattern, { dot: true })(file),
+        testAttributeNames:     DEFAULT_TEST_ATTRIBUTE_NAMES,
+        // ariaSnapshot + artifactTrustLevel are populated by the custom
+        // Playwright reporter sidecar (Phase 0). Phase 1 PR 2 ships
+        // without that wiring; the detector gracefully degrades when
+        // ARIA is unavailable (returns kind=null → routes to hold).
+        alreadyApprovedThisRun: approvedAutofixCount,
+        maxAutoHealsPerRun:     MAX_AUTOHEALS_PER_RUN,
+      });
+      if (outcome) {
+        const inserted = saveAction(runId, outcome.proposal, outcome.decision);
+        if (inserted) {
+          if (outcome.decision.verdict === 'approved') approvedAutofixCount++;
+          autofixOutcomes.push({ ...outcome, result });
+          const explanation = explainDecision(
+            outcome.proposal.type, outcome.decision.verdict, outcome.decision.reason, failureStats,
+          );
+          decisionLog.push({
+            actionType: outcome.proposal.type, verdict: outcome.decision.verdict,
+            reason: outcome.decision.reason, testName: result.testName, explanation,
+          });
+          if (isNotable(outcome.decision.verdict, outcome.decision.reason)) {
+            console.log(`[decision] ${explanation} — ${result.testName}`);
+          }
+        }
+      }
+    }
+
+    // ── Autofix queue artifact ──────────────────────────────────────────
+    if (AUTOFIX_MODE !== 'off' && autofixOutcomes.length > 0) {
+      try {
+        const artifact = writeAutofixQueue({
+          outputPath: AUTOFIX_QUEUE_PATH,
+          runId,
+          pipelineId: PIPELINE_ID,
+          mode:       AUTOFIX_MODE,
+          entries:    autofixOutcomes.map(o => ({
+            proposal: o.proposal,
+            decision: o.decision,
+            context:  o.context,
+            result:   o.result,
+          })),
+        });
+        console.log(
+          `[oracle] autofix queue: ${artifact.approvedCount} approved, ` +
+          `${artifact.heldCount} held, ${artifact.rejectedCount} rejected ` +
+          `→ ${AUTOFIX_QUEUE_PATH}`,
+        );
+      } catch (err) {
+        // Queue-write failure must NOT fail the triage run; log and continue.
+        console.warn('[oracle] failed to write autofix queue:', err);
       }
     }
 

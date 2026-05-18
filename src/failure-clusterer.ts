@@ -282,20 +282,30 @@ export function aggregateClusterStats(
   clusterHistoryStats: PatternStats,
 ): PatternStats {
   const agg: PatternStats = {
-    actionCount:        clusterHistoryStats.actionCount,
-    jiraCreatedCount:   clusterHistoryStats.jiraCreatedCount,
-    jiraDuplicateCount: clusterHistoryStats.jiraDuplicateCount,
-    retryPassedCount:   clusterHistoryStats.retryPassedCount,
-    retryFailedCount:   clusterHistoryStats.retryFailedCount,
+    actionCount:          clusterHistoryStats.actionCount,
+    jiraCreatedCount:     clusterHistoryStats.jiraCreatedCount,
+    jiraDuplicateCount:   clusterHistoryStats.jiraDuplicateCount,
+    retryPassedCount:     clusterHistoryStats.retryPassedCount,
+    retryFailedCount:     clusterHistoryStats.retryFailedCount,
+    agentFixAppliedCount: clusterHistoryStats.agentFixAppliedCount,
+    agentFixFailedCount:  clusterHistoryStats.agentFixFailedCount,
+    // Most-recent timestamp: prefer the cluster-level signal; per-failure
+    // members contribute their own which we keep separate (cluster-level
+    // autofix isn't a Phase 1 concept; we'd never roll up multiple
+    // member timestamps into one cluster value because that would imply
+    // a non-existent cluster-level fix event).
+    lastAgentFixApplied:  clusterHistoryStats.lastAgentFixApplied,
   };
   for (const f of cluster.failures) {
     const s = perFailureStatsMap.get(`${f.testName}:${f.errorHash}`);
     if (!s) continue;
-    agg.actionCount        += s.actionCount;
-    agg.jiraCreatedCount   += s.jiraCreatedCount;
-    agg.jiraDuplicateCount += s.jiraDuplicateCount;
-    agg.retryPassedCount   += s.retryPassedCount;
-    agg.retryFailedCount   += s.retryFailedCount;
+    agg.actionCount          += s.actionCount;
+    agg.jiraCreatedCount     += s.jiraCreatedCount;
+    agg.jiraDuplicateCount   += s.jiraDuplicateCount;
+    agg.retryPassedCount     += s.retryPassedCount;
+    agg.retryFailedCount     += s.retryFailedCount;
+    agg.agentFixAppliedCount += s.agentFixAppliedCount;
+    agg.agentFixFailedCount  += s.agentFixFailedCount;
   }
   return agg;
 }

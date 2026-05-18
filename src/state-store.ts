@@ -419,7 +419,44 @@ export function getPatternStats(
        AND test_name = ? AND error_hash = ?`,
   ).get(testName, errorHash) as { count: number }).count;
 
-  return { actionCount, jiraCreatedCount, jiraDuplicateCount, retryPassedCount, retryFailedCount };
+  // Autofix history. agent_fix_applied feedback fires when the healer
+  // successfully applied + verified a patch; agent_fix_failed fires when
+  // the healer gave up or its patch couldn't be verified. Both are
+  // matched on testName+errorHash (per-test, not cluster-aware).
+  const agentFixAppliedCount = (db.prepare(
+    `SELECT COUNT(*) as count FROM feedback
+     WHERE feedback_type = 'agent_fix_applied'
+       AND test_name = ? AND error_hash = ?`,
+  ).get(testName, errorHash) as { count: number }).count;
+
+  const agentFixFailedCount = (db.prepare(
+    `SELECT COUNT(*) as count FROM feedback
+     WHERE feedback_type = 'agent_fix_failed'
+       AND test_name = ? AND error_hash = ?`,
+  ).get(testName, errorHash) as { count: number }).count;
+
+  // Most-recent agent_fix_applied timestamp drives the
+  // history:fix_decay_suspected suppression rule. ORDER BY id DESC
+  // gives most-recent-first since feedback ids are auto-increment.
+  const lastAppliedRow = db.prepare(
+    `SELECT created_at FROM feedback
+     WHERE feedback_type = 'agent_fix_applied'
+       AND test_name = ? AND error_hash = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+  ).get(testName, errorHash) as { created_at: string } | undefined;
+  const lastAgentFixApplied = lastAppliedRow?.created_at ?? null;
+
+  return {
+    actionCount,
+    jiraCreatedCount,
+    jiraDuplicateCount,
+    retryPassedCount,
+    retryFailedCount,
+    agentFixAppliedCount,
+    agentFixFailedCount,
+    lastAgentFixApplied,
+  };
 }
 
 /**
@@ -471,6 +508,11 @@ export function getClusterHistoryStats(clusterKey: string): PatternStats {
     jiraDuplicateCount,
     retryPassedCount: 0,
     retryFailedCount: 0,
+    // Autofix history is per-test, never cluster-scoped — cluster-level
+    // history contributes zero for these counters by definition.
+    agentFixAppliedCount: 0,
+    agentFixFailedCount:  0,
+    lastAgentFixApplied:  null,
   };
 }
 

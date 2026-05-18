@@ -89,7 +89,8 @@ export type ActionType =
   | 'notify_slack'
   | 'quarantine_test'
   | 'retry_test'
-  | 'request_human_review';
+  | 'request_human_review'
+  | 'fix_test_with_agent';
 
 export type ActionScope     = 'failure' | 'cluster' | 'run';
 export type DecisionVerdict = 'approved' | 'rejected' | 'deferred' | 'held';
@@ -177,6 +178,17 @@ export interface PatternStats {
   retryPassedCount:   number;
   /** feedback rows where feedback_type = retry_failed. */
   retryFailedCount:   number;
+  /** feedback rows where feedback_type = agent_fix_applied (healer
+   *  applied a patch that verified locally before opening a PR). */
+  agentFixAppliedCount: number;
+  /** feedback rows where feedback_type = agent_fix_failed (healer
+   *  attempted a fix but couldn't verify, or the patch regressed
+   *  other tests). */
+  agentFixFailedCount:  number;
+  /** ISO timestamp of the most recent agent_fix_applied feedback for
+   *  this pattern, or null when never autofixed. Drives the
+   *  history:fix_decay_suspected rule in the policy engine. */
+  lastAgentFixApplied:  string | null;
 }
 
 /**
@@ -204,7 +216,9 @@ export type FeedbackType =
   | 'classification_corrected'
   | 'action_overridden'
   | 'retry_passed'
-  | 'retry_failed';
+  | 'retry_failed'
+  | 'agent_fix_applied'
+  | 'agent_fix_failed';
 
 export interface FeedbackEntry {
   feedbackType:       FeedbackType;
