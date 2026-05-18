@@ -278,6 +278,23 @@ export function loadFailureContext(opts: LoadFailureContextOptions): LoadFailure
  * context by canonical (testName, errorHash) identifier first, with
  * fallback to (testFile, testTitle) when the reporter didn't populate
  * the canonical fields.
+ *
+ * Fallback safety rules (do not weaken — these prevent cross-attaching
+ * ARIA from one failure to a different failure that happens to share a
+ * testFile):
+ *
+ *   1. Only entries with a NON-EMPTY `testTitle` are eligible. An entry
+ *      keyed canonically (testName + errorHash) but missing testTitle
+ *      must NOT match via fallback — otherwise `endsWith('')` is
+ *      vacuously true for every Oracle testName under that file.
+ *   2. Suffix match requires a recognized boundary delimiter so that
+ *      e.g. testTitle "in" does not match testName "login". Accepted
+ *      shapes: exact equality, `endsWith(' > <title>')` (Playwright /
+ *      Oracle canonical), or `endsWith(' <title>')` (whitespace
+ *      boundary for less structured testName forms).
+ *   3. When multiple eligible entries match, return the most specific
+ *      (longest testTitle). When two are tied for longest, return
+ *      undefined — refuse to guess between equally plausible matches.
  */
 export function lookupFailureContext(
   loaded:    LoadFailureContextResult,
@@ -287,17 +304,42 @@ export function lookupFailureContext(
 ): FailureContext | undefined {
   const primary = loaded.byKey.get(`${testName}:${errorHash}`);
   if (primary) return primary;
-  // Fallback: match by testFile + testTitle if reporter only had those.
-  // We don't have testTitle here directly — Oracle's testName is
-  // `"<file> > <title>"` in many cases. Best-effort: try lookups where
-  // the key is testFile::<anything> by walking the map; if we have
-  // testFile, prefer entries whose stored testFile matches.
-  if (testFile) {
-    for (const [, ctx] of loaded.byKey) {
-      if (ctx.testFile === testFile && testName.endsWith(ctx.testTitle ?? '')) {
-        return ctx;
-      }
+  if (!testFile) return undefined;
+
+  // Collect every fallback candidate whose stored testFile matches and
+  // whose non-empty testTitle suffix-matches testName at a recognized
+  // delimiter. We materialize the full list (not first-match) so we can
+  // detect specificity ties below.
+  const candidates: FailureContext[] = [];
+  for (const [, ctx] of loaded.byKey) {
+    if (ctx.testFile !== testFile) continue;
+    const title = ctx.testTitle;
+    if (!title) continue; // rule 1: refuse empty-suffix match
+    if (
+      testName === title ||                       // exact
+      testName.endsWith(` > ${title}`) ||         // ` > title` boundary
+      testName.endsWith(` ${title}`)              // whitespace boundary
+    ) {
+      candidates.push(ctx);
     }
   }
-  return undefined;
+
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) return candidates[0];
+
+  // Rule 3: longest testTitle wins; ties are unresolvable → undefined.
+  let best:    FailureContext | undefined;
+  let bestLen = -1;
+  let tied    = false;
+  for (const c of candidates) {
+    const len = (c.testTitle ?? '').length;
+    if (len > bestLen) {
+      best    = c;
+      bestLen = len;
+      tied    = false;
+    } else if (len === bestLen) {
+      tied = true;
+    }
+  }
+  return tied ? undefined : best;
 }

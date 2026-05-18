@@ -289,4 +289,155 @@ describe('lookupFailureContext', () => {
     assert.ok(ctx, 'fallback should match on testFile + testTitle suffix');
     assert.equal(ctx!.testFile, 'tests/foo.spec.ts');
   });
+
+  it('does NOT fall back to a canonical-keyed entry that has no testTitle', () => {
+    // Regression guard for the empty-suffix bug:
+    //   `testName.endsWith(ctx.testTitle ?? '')` is vacuously true when
+    //   testTitle is missing — that would cross-attach ARIA from a
+    //   canonical-only context to any failure sharing its testFile.
+    const dir = join(tmpRoot, 'lookup-no-title');
+    mkdirSync(join(dir, 'canonical-only'), { recursive: true });
+    writeFileSync(
+      join(dir, 'canonical-only', 'data.json'),
+      JSON.stringify({
+        testName:           'Suite > Test A',
+        errorHash:          'hashA',
+        testFile:           'tests/shared.spec.ts',
+        // NOTE: no testTitle on purpose
+        ariaSnapshot:       '- button "from-A"',
+        artifactTrustLevel: 'trusted',
+      }),
+    );
+    const loaded = loadFailureContext({ rootPath: dir });
+    // Look up a DIFFERENT failure (Test B) that happens to share testFile.
+    // The canonical lookup misses (different testName + errorHash);
+    // fallback must NOT return Test A's context.
+    const ctx = lookupFailureContext(
+      loaded,
+      'Suite > Test B',
+      'hashB',
+      'tests/shared.spec.ts',
+    );
+    assert.equal(ctx, undefined, 'must not attach Test A ARIA to Test B failure');
+  });
+
+  it('requires a delimiter boundary for fallback suffix match', () => {
+    // A bare endsWith would match testTitle "in" against testName "login".
+    // The delimited match (`> `, space, or exact) rejects that.
+    const dir = join(tmpRoot, 'lookup-delim');
+    mkdirSync(join(dir, 'slug'), { recursive: true });
+    writeFileSync(
+      join(dir, 'slug', 'data.json'),
+      JSON.stringify({
+        testFile:           'tests/auth.spec.ts',
+        testTitle:          'in',
+        ariaSnapshot:       '- button "x"',
+        artifactTrustLevel: 'trusted',
+      }),
+    );
+    const loaded = loadFailureContext({ rootPath: dir });
+    const ctx = lookupFailureContext(
+      loaded,
+      'login',  // ends with "in" character-wise but not at a delimiter
+      'h-x',
+      'tests/auth.spec.ts',
+    );
+    assert.equal(ctx, undefined, 'must not match across word boundary');
+  });
+
+  it('prefers the most-specific (longest testTitle) candidate on multi-match', () => {
+    const dir = join(tmpRoot, 'lookup-longest');
+    mkdirSync(join(dir, 'short'), { recursive: true });
+    mkdirSync(join(dir, 'long'),  { recursive: true });
+    writeFileSync(join(dir, 'short', 'data.json'), JSON.stringify({
+      testFile:           'tests/x.spec.ts',
+      testTitle:          'Test A',
+      ariaSnapshot:       '- button "short"',
+      artifactTrustLevel: 'trusted',
+    }));
+    writeFileSync(join(dir, 'long', 'data.json'), JSON.stringify({
+      testFile:           'tests/x.spec.ts',
+      testTitle:          'subsuite > Test A',
+      ariaSnapshot:       '- button "long"',
+      artifactTrustLevel: 'trusted',
+    }));
+    const loaded = loadFailureContext({ rootPath: dir });
+    const ctx = lookupFailureContext(
+      loaded,
+      'Top > subsuite > Test A',
+      'h-x',
+      'tests/x.spec.ts',
+    );
+    assert.ok(ctx);
+    assert.equal(ctx!.testTitle, 'subsuite > Test A');
+  });
+
+  it('returns undefined when two canonical-keyed entries share (testFile, testTitle)', () => {
+    // Two distinct canonical keys (different testName + errorHash) but
+    // identical (testFile, testTitle). Map keeps both — the fallback
+    // walk finds two equally-specific matches and must refuse to guess.
+    const dir = join(tmpRoot, 'lookup-tie');
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    mkdirSync(join(dir, 'b'), { recursive: true });
+    writeFileSync(join(dir, 'a', 'data.json'), JSON.stringify({
+      testName:           'Suite A > Test',
+      errorHash:          'hashA',
+      testFile:           'tests/dup.spec.ts',
+      testTitle:          'Test',
+      ariaSnapshot:       '- button "from-A"',
+      artifactTrustLevel: 'trusted',
+    }));
+    writeFileSync(join(dir, 'b', 'data.json'), JSON.stringify({
+      testName:           'Suite B > Test',
+      errorHash:          'hashB',
+      testFile:           'tests/dup.spec.ts',
+      testTitle:          'Test',
+      ariaSnapshot:       '- button "from-B"',
+      artifactTrustLevel: 'trusted',
+    }));
+    const loaded = loadFailureContext({ rootPath: dir });
+    assert.equal(loaded.byKey.size, 2, 'two canonical keys are kept distinct');
+    // testName whose canonical key isn't in the map → falls through to
+    // walk; both entries fallback-match with identical testTitle length.
+    const ctx = lookupFailureContext(
+      loaded,
+      'Suite C > Test',
+      'hashC',
+      'tests/dup.spec.ts',
+    );
+    assert.equal(ctx, undefined, 'tied length → refuse to guess');
+  });
+
+  it('returns undefined when two fallback candidates have IDENTICAL testTitle', () => {
+    // Same testFile + same testTitle stored under two different slugs
+    // (different errorHashes upstream, but the loader keys fallback
+    // entries by `${testFile}::${testTitle}` so the second overwrites
+    // the first). This is the realistic dedup path — confirm we return
+    // ONE deterministic match, not throw, and not return a spurious tie.
+    const dir = join(tmpRoot, 'lookup-dup');
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    mkdirSync(join(dir, 'b'), { recursive: true });
+    writeFileSync(join(dir, 'a', 'data.json'), JSON.stringify({
+      testFile:           'tests/z.spec.ts',
+      testTitle:          'shared title',
+      ariaSnapshot:       '- button "a"',
+      artifactTrustLevel: 'trusted',
+    }));
+    writeFileSync(join(dir, 'b', 'data.json'), JSON.stringify({
+      testFile:           'tests/z.spec.ts',
+      testTitle:          'shared title',
+      ariaSnapshot:       '- button "b"',
+      artifactTrustLevel: 'trusted',
+    }));
+    const loaded = loadFailureContext({ rootPath: dir });
+    // Both write to the same key — second overwrites first; map has 1 entry.
+    assert.equal(loaded.byKey.size, 1, 'duplicate fallback keys collapse to one entry');
+    const ctx = lookupFailureContext(
+      loaded,
+      'Outer > shared title',
+      'h-x',
+      'tests/z.spec.ts',
+    );
+    assert.ok(ctx, 'sole surviving entry should match');
+  });
 });
