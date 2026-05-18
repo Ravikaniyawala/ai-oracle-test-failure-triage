@@ -81,6 +81,118 @@ describe('classifyLocatorDrift — basic shape', () => {
   });
 });
 
+describe('classifyLocatorDrift — safety regressions (Codex review)', () => {
+  // Codex P0 #2: exact-match candidate must NOT classify as drift.
+  it('returns null when candidate has the same test-attribute value (no drift)', () => {
+    const r = classifyLocatorDrift({
+      failingLocator: parseLocatorExpression(`getByTestId('product-list')`)!,
+      ariaSnapshot:   [{
+        role: 'list',
+        name: 'product-list',
+        testAttributes: { 'data-test': 'product-list' },  // SAME value
+      }],
+    });
+    assert.equal(r.kind, null);
+    assert.equal(r.confidence, 0);
+    assert.match(r.reasoning, /no drift|matching test-attribute/);
+  });
+
+  // Codex P0 #2: also applies to attribute_selector kind.
+  it('returns null when attribute_selector candidate has matching value', () => {
+    const r = classifyLocatorDrift({
+      failingLocator: parseLocatorExpression(`[data-test="store-card"]`)!,
+      ariaSnapshot:   [{
+        role: 'article',
+        name: 'store-card',
+        testAttributes: { 'data-test': 'store-card' },
+      }],
+    });
+    assert.equal(r.kind, null);
+  });
+
+  // Codex P0 #1: no weak fallback — unrelated ARIA elements must NOT
+  // become auto-eligible candidates for test-id locators.
+  it('returns null when no candidate has matching name token AND no matching testid value', () => {
+    const r = classifyLocatorDrift({
+      failingLocator: parseLocatorExpression(`getByTestId('checkout-btn')`)!,
+      ariaSnapshot:   [
+        // Unrelated element with a test attribute (would have been picked
+        // up by the old `anyWithTestAttr` fallback).
+        { role: 'link', name: 'Footer Link', testAttributes: { 'data-test': 'footer-link' } },
+      ],
+    });
+    assert.equal(r.kind, null);
+    assert.match(r.reasoning, /no candidate/);
+  });
+
+  // Codex P0 #1 corollary: when candidate has no test attributes at all,
+  // can't infer drift from current ARIA alone — return null.
+  it('returns null when matched candidate has no configured test attributes', () => {
+    const r = classifyLocatorDrift({
+      failingLocator: parseLocatorExpression(`getByTestId('product-aisle')`)!,
+      ariaSnapshot:   [
+        // Name matches via token overlap (product-aisle / Aisle A3 share
+        // the "aisle" token) BUT no test attributes exist on candidate.
+        { role: 'text', name: 'Aisle A3', testAttributes: {} },
+      ],
+    });
+    assert.equal(r.kind, null);
+    assert.match(r.reasoning, /no configured test attributes|cannot confidently infer/);
+  });
+
+  // Section 4 invariant test: getByTestId locators must NEVER classify
+  // as user_visible_text drift, regardless of the candidate's name.
+  // Current ARIA name alone is insufficient evidence of text drift —
+  // the classifier has no prior visible name to compare against.
+  it('INVARIANT: getByTestId NEVER returns locator_drift_user_visible_text', () => {
+    // Try several shapes where a naive classifier might be tempted to
+    // infer text drift from candidate.name.
+    const cases = [
+      // Candidate name completely different from the testid value
+      {
+        loc: `getByTestId('checkout-btn')`,
+        aria: [{ role: 'button', name: 'Place Order',
+                 testAttributes: { 'data-test': 'place-order-btn' } }],
+      },
+      // Candidate name superficially related but text "changed"
+      {
+        loc: `getByTestId('signin-form')`,
+        aria: [{ role: 'form', name: 'Login form',
+                 testAttributes: { 'data-test': 'login-form' } }],
+      },
+      // No test attributes at all
+      {
+        loc: `getByTestId('product-aisle')`,
+        aria: [{ role: 'text', name: 'Section B' }],
+      },
+    ];
+    for (const c of cases) {
+      const r = classifyLocatorDrift({
+        failingLocator: parseLocatorExpression(c.loc)!,
+        ariaSnapshot:   c.aria,
+      });
+      assert.notEqual(
+        r.kind, 'locator_drift_user_visible_text',
+        `getByTestId locator ${c.loc} must not classify as user_visible_text drift`,
+      );
+    }
+  });
+
+  // Section 4 invariant: same rule applies to attribute_selector locators
+  // that target configured test attributes.
+  it('INVARIANT: attribute_selector with configured test attribute NEVER returns user_visible_text drift', () => {
+    const r = classifyLocatorDrift({
+      failingLocator: parseLocatorExpression(`[data-test="checkout-btn"]`)!,
+      ariaSnapshot:   [{
+        role: 'button',
+        name: 'Place Order',  // text "changed" but we have no prior to compare against
+        testAttributes: { 'data-test': 'place-order-btn' },
+      }],
+    });
+    assert.notEqual(r.kind, 'locator_drift_user_visible_text');
+  });
+});
+
 describe('classifyLocatorDrift — fixture accuracy (Phase 0 corpus)', () => {
   function evalCases(cases: typeof HAND_CRAFTED_CASES) {
     const byKind: Record<LocatorDriftKind, { correct: number; total: number }> = {

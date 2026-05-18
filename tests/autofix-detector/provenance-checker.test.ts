@@ -25,22 +25,67 @@ describe('classifyFrameProvenance', () => {
     assert.match(v.reason, /vendor/);
   });
 
-  it('untrusts bundled without source map', () => {
+  it('untrusts bundled without source-map target', () => {
     const v = classifyFrameProvenance({
       rawFrame: '/assets/index-abc123def.js',
       repoRoot: REPO,
     });
     assert.equal(v.provenance, 'untrusted');
-    assert.match(v.reason, /source-map/);
+    assert.match(v.reason, /source-map target/);
   });
 
-  it('trusts bundled WITH source map', () => {
+  it('trusts bundled when source-map target resolves to repo-local source', () => {
     const v = classifyFrameProvenance({
-      rawFrame: '/assets/index-abc123def.js',
-      repoRoot: REPO,
-      hasSourceMap: true,
+      rawFrame:        '/assets/index-abc123def.js',
+      repoRoot:        REPO,
+      sourceMapTarget: `${REPO}/src/CheckoutPage.tsx`,
     });
     assert.equal(v.provenance, 'trusted');
+    assert.match(v.reason, /verified repo-local/);
+  });
+
+  // P1 #3 regression suite: source-map target presence is NOT sufficient —
+  // the resolved target must be verified as repo-local + not
+  // vendor/transient/bundled.
+  it('untrusts bundled when source-map target resolves to node_modules', () => {
+    const v = classifyFrameProvenance({
+      rawFrame:        '/assets/index-abc123def.js',
+      repoRoot:        REPO,
+      sourceMapTarget: `${REPO}/node_modules/some-pkg/dist/foo.js`,
+    });
+    assert.equal(v.provenance, 'untrusted');
+    assert.match(v.reason, /vendor/);
+  });
+
+  it('untrusts bundled when source-map target resolves to transient cache', () => {
+    const v = classifyFrameProvenance({
+      rawFrame:        '/assets/index-abc123def.js',
+      repoRoot:        REPO,
+      sourceMapTarget: `${REPO}/.next/cache/foo.tsx`,
+    });
+    assert.equal(v.provenance, 'untrusted');
+    assert.match(v.reason, /transient/);
+  });
+
+  it('untrusts bundled when source-map target resolves to another bundled file inside repo', () => {
+    const v = classifyFrameProvenance({
+      rawFrame:        '/assets/index-abc123def.js',
+      repoRoot:        REPO,
+      // Repo-local but bundled-shaped path (hashed asset name with hex hash)
+      sourceMapTarget: `${REPO}/dist/chunk-abc123def.js`,
+    });
+    assert.equal(v.provenance, 'untrusted');
+    assert.match(v.reason, /bundled/);
+  });
+
+  it('untrusts bundled when source-map target is outside the repo', () => {
+    const v = classifyFrameProvenance({
+      rawFrame:        '/assets/index-abc123def.js',
+      repoRoot:        REPO,
+      sourceMapTarget: '/some/other/repo/src/foo.tsx',
+    });
+    assert.equal(v.provenance, 'untrusted');
+    assert.match(v.reason, /repo-local/);
   });
 
   it('untrusts transient build dirs', () => {

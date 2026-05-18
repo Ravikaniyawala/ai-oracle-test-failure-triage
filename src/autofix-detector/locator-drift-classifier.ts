@@ -69,15 +69,30 @@ function findCandidate(
     case 'attribute_selector': {
       if (!loc.value) return null;
       const v = loc.value.toLowerCase();
+
+      // Strong match: name token overlap with the testid value (testids
+      // usually encode meaningful tokens — `checkout-btn` overlaps with
+      // a candidate named "Checkout").
       const byName = snapshot.find(
         e => e.name && tokensOverlap(e.name.toLowerCase(), v),
       );
       if (byName) return byName;
-      const anyWithTestAttr = snapshot.find(
-        e => e.testAttributes && Object.keys(e.testAttributes)
-              .some(k => testAttrs.includes(k.toLowerCase())),
+
+      // Strong match: an element with the SAME testid value. Returning
+      // this lets the test_attribute branch detect "no drift" downstream
+      // (Codex P0 #2 — same testid means the locator didn't drift).
+      const byExactTestAttr = snapshot.find(
+        e => e.testAttributes &&
+             Object.values(e.testAttributes).some(val => val === loc.value),
       );
-      return anyWithTestAttr ?? null;
+      if (byExactTestAttr) return byExactTestAttr;
+
+      // No strong match. Return null rather than picking an arbitrary
+      // element with any test attribute — picking weakly here would let
+      // the test_attribute branch emit auto-eligible repairability based
+      // on unrelated ARIA evidence (Codex P0 #1). The classifier returns
+      // `kind: null` and the caller routes to hold / ambiguous_repair_target.
+      return null;
     }
 
     case 'getByRole': {
@@ -253,13 +268,37 @@ export function classifyLocatorDrift(input: ClassifierInput): LocatorDriftClassi
 
   // Priority 3: test attribute drift — auto-eligible.
   if (attrKind === 'test_attribute') {
-    const hasMatchingTestAttr = !!candidate.testAttributes &&
+    // Exact match: candidate carries the same configured test-attribute
+    // value as the failing locator. The locator did NOT drift on this
+    // attribute. Return no-drift (Codex P0 #2) — auto-eligible
+    // repairability must require positive evidence of drift, not absence
+    // of evidence of stability.
+    const hasExactMatch = !!candidate.testAttributes &&
+      Object.entries(candidate.testAttributes)
+        .some(([k, v]) =>
+          testAttrs.includes(k.toLowerCase()) &&
+          v === input.failingLocator.value,
+        );
+    if (hasExactMatch) {
+      return {
+        kind:       null,
+        confidence: 0,
+        candidate,
+        reasoning:
+          `candidate has matching test-attribute value ` +
+          `"${input.failingLocator.value}"; no drift on this locator`,
+      };
+    }
+
+    // True drift: candidate has a DIFFERENT configured test-attribute
+    // value than the failing locator. Auto-eligible.
+    const hasDifferentTestAttr = !!candidate.testAttributes &&
       Object.entries(candidate.testAttributes)
         .some(([k, v]) =>
           testAttrs.includes(k.toLowerCase()) &&
           v !== input.failingLocator.value,
         );
-    if (hasMatchingTestAttr) {
+    if (hasDifferentTestAttr) {
       return {
         kind:       'locator_drift_data_testid_only',
         confidence: 0.90,
@@ -270,14 +309,19 @@ export function classifyLocatorDrift(input: ClassifierInput): LocatorDriftClassi
           `different test attribute value`,
       };
     }
+
+    // Candidate exists but has NO configured test attributes. We can't
+    // confidently claim "the testid drifted to a new value" without
+    // evidence the candidate ever had a testid — could be an unrelated
+    // element entirely. Return null per the inference-safety constraint
+    // (no inference without evidence). Routes to hold / ambiguous_repair_target.
     return {
-      kind:       'locator_drift_data_testid_only',
-      confidence: 0.70,
+      kind:       null,
+      confidence: 0,
       candidate,
       reasoning:
-        `failing locator referenced test attribute ` +
-        `"${input.failingLocator.value}" which no longer exists on the ` +
-        `matched element`,
+        `candidate has no configured test attributes; cannot confidently ` +
+        `infer data-testid drift from current ARIA alone`,
     };
   }
 

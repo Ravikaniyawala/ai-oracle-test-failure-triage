@@ -18,9 +18,15 @@ import { normalizePath } from './path-normalizer.js';
 import type { NormalizedStackFrame, StackFrameProvenance } from './types.js';
 
 export interface ProvenanceInput {
-  rawFrame:        string;
-  repoRoot:        string;
-  hasSourceMap?:   boolean;
+  rawFrame:         string;
+  repoRoot:         string;
+  /**
+   * Path the bundled file's source map resolves to, if any. When provided,
+   * provenance is `trusted` only if this target is repo-local AND not
+   * vendor/transient/bundled itself. Presence of a sidecar source map alone
+   * is NOT sufficient — the resolved target must be verified (Codex P1 #3).
+   */
+  sourceMapTarget?: string;
   trustedPrefixes?: string[];
 }
 
@@ -33,10 +39,31 @@ export function classifyFrameProvenance(input: ProvenanceInput): ProvenanceVerdi
   const norm = normalizePath(input.rawFrame, input.repoRoot);
 
   if (norm.isBundled) {
-    if (input.hasSourceMap) {
-      return { provenance: 'trusted', reason: 'bundled path with source-map sidecar' };
+    if (!input.sourceMapTarget) {
+      return {
+        provenance: 'untrusted',
+        reason:     'bundled path without source-map target',
+      };
     }
-    return { provenance: 'untrusted', reason: 'bundled path without source-map provenance' };
+    // Verify the source-map target resolves to a real repo source — not
+    // to another bundled file, vendor dependency, or transient cache.
+    const targetNorm = normalizePath(input.sourceMapTarget, input.repoRoot);
+    if (!targetNorm.isRepoLocal) {
+      return {
+        provenance: 'untrusted',
+        reason:     'source-map target does not resolve to a repo-local path',
+      };
+    }
+    if (targetNorm.isVendor || targetNorm.isTransient || targetNorm.isBundled) {
+      return {
+        provenance: 'untrusted',
+        reason:     'source-map target resolves to vendor/transient/bundled path',
+      };
+    }
+    return {
+      provenance: 'trusted',
+      reason:     'bundled path with verified repo-local source-map target',
+    };
   }
 
   if (norm.isVendor) {
@@ -53,7 +80,6 @@ export function classifyFrameProvenance(input: ProvenanceInput): ProvenanceVerdi
 
   if (norm.isRepoLocal) {
     if (
-      input.hasSourceMap ||
       norm.normalized.endsWith('.ts')  ||
       norm.normalized.endsWith('.tsx') ||
       norm.normalized.endsWith('.js')  ||
@@ -82,7 +108,7 @@ export function classifyFrameProvenance(input: ProvenanceInput): ProvenanceVerdi
 export function buildNormalizedFrame(
   rawLine:  string,
   repoRoot: string,
-  options?: Pick<ProvenanceInput, 'hasSourceMap' | 'trustedPrefixes'>,
+  options?: Pick<ProvenanceInput, 'sourceMapTarget' | 'trustedPrefixes'>,
 ): NormalizedStackFrame {
   const positionMatch = rawLine.match(/(?:^|[\s(])([^\s()]+?):(\d+)(?::(\d+))?/);
   const filePath = positionMatch ? positionMatch[1]! : rawLine.trim();
@@ -92,7 +118,7 @@ export function buildNormalizedFrame(
   const verdict = classifyFrameProvenance({
     rawFrame:        filePath,
     repoRoot,
-    hasSourceMap:    options?.hasSourceMap,
+    sourceMapTarget: options?.sourceMapTarget,
     trustedPrefixes: options?.trustedPrefixes,
   });
 

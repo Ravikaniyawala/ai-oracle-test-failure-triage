@@ -90,13 +90,20 @@ const DATA_TESTID_CASES: DriftCase[] = [
     rationale: 'data-cy attribute drifted',
   },
   {
-    id: 'testid-08-data-test-removed',
+    id: 'testid-08-data-test-prefix-added',
     locatorExpression: `getByTestId('product-aisle')`,
     ariaSnapshot: [
-      { role: 'text', name: 'Aisle A3', testAttributes: {} },
+      // Drifted: data-test value gained a prefix during refactor.
+      // (Originally this case was "data-test removed entirely" but per the
+      // post-Codex inference-safety rules, a candidate with no test
+      // attributes cannot confidently classify as data_testid drift —
+      // we'd be inferring prior state from current ARIA alone. That
+      // scenario now correctly returns null and is exercised in the
+      // safety-regressions test suite.)
+      { role: 'text', name: 'Product Aisle', testAttributes: { 'data-test': 'detail-product-aisle' } },
     ],
     expectedKind: 'locator_drift_data_testid_only',
-    rationale: 'data-test removed entirely; element still findable by role/name',
+    rationale: 'data-test value prefixed during refactor; name still overlaps',
   },
   {
     id: 'testid-09-similar-token-overlap',
