@@ -191,6 +191,61 @@ describe('classifyLocatorDrift — safety regressions (Codex review)', () => {
     });
     assert.notEqual(r.kind, 'locator_drift_user_visible_text');
   });
+
+  // Codex re-review P1: exact-match candidate lookup must filter by
+  // CONFIGURED test-attribute keys. An unconfigured attribute that
+  // happens to carry the same value must not establish a repair target.
+  it('does NOT use unconfigured test-attribute values to establish exact-match repair target', () => {
+    // Consumer config: only data-test counts. Snapshot has BOTH an
+    // unconfigured data-testid matching the old locator value AND a
+    // candidate carrying a different data-test value.
+    const r = classifyLocatorDrift({
+      failingLocator:     parseLocatorExpression(`[data-test="product-list"]`)!,
+      ariaSnapshot: [
+        {
+          // An UNRELATED element. Its data-testid matches the locator's
+          // value but data-testid is NOT in the configured testAttrs.
+          // This element must not be selected as the repair target.
+          role: 'banner',
+          name: 'Footer banner',
+          testAttributes: { 'data-testid': 'product-list' },
+        },
+        {
+          // The intended candidate (overlapping name "Products") whose
+          // data-test attribute has drifted.
+          role: 'list',
+          name: 'Products',
+          testAttributes: { 'data-test': 'products-list' },
+        },
+      ],
+      testAttributeNames: ['data-test'],
+    });
+    // The candidate must be the second element (drift in configured
+    // data-test attribute), so we expect data_testid_only drift, NOT a
+    // null result that would happen if the wrong element was selected.
+    assert.equal(r.kind, 'locator_drift_data_testid_only');
+    assert.equal(r.candidate?.name, 'Products');
+  });
+
+  // Symmetric case: the unconfigured attribute appears alone (no other
+  // strong candidate). The classifier should NOT use it as a repair
+  // target — it should return null.
+  it('returns null when only unconfigured test-attribute carries the exact value', () => {
+    const r = classifyLocatorDrift({
+      failingLocator:     parseLocatorExpression(`[data-test="checkout-btn"]`)!,
+      ariaSnapshot: [
+        {
+          // Unrelated element; its data-testid value matches what the
+          // locator expects, but data-testid is unconfigured.
+          role: 'navigation',
+          name: 'Footer nav',
+          testAttributes: { 'data-testid': 'checkout-btn' },
+        },
+      ],
+      testAttributeNames: ['data-test'],
+    });
+    assert.equal(r.kind, null);
+  });
 });
 
 describe('classifyLocatorDrift — fixture accuracy (Phase 0 corpus)', () => {
@@ -232,12 +287,21 @@ describe('classifyLocatorDrift — fixture accuracy (Phase 0 corpus)', () => {
     return { byKind, failures };
   }
 
-  it('hand-crafted: ≥85% per active sub-kind', () => {
+  it('hand-crafted: zero mismatches AND ≥85% per active sub-kind', () => {
     const { byKind, failures } = evalCases(HAND_CRAFTED_CASES);
-    if (failures.length > 0) console.log('hand-crafted failures (first 10):',
-      failures.slice(0, 10).map(f => `\n  - ${f}`).join(''));
+    // Codex review hardening: log every mismatch AND fail on any of them.
+    // The corpus is small enough that all hand-crafted cases should pass;
+    // a single mismatch usually indicates either a real classifier
+    // regression or a stale fixture that needs updating, neither of
+    // which should hide behind a 15% slack.
+    if (failures.length > 0) {
+      console.log('hand-crafted failures:',
+        failures.map(f => `\n  - ${f}`).join(''));
+    }
+    assert.equal(failures.length, 0,
+      `${failures.length} hand-crafted mismatch(es); see log above`);
     for (const [kind, s] of Object.entries(byKind)) {
-      if (s.total === 0) continue;  // skip kinds not in this corpus
+      if (s.total === 0) continue;
       const acc = s.correct / s.total;
       assert.ok(acc >= 0.85, `${kind}: ${(acc * 100).toFixed(1)}% < 85%`);
     }

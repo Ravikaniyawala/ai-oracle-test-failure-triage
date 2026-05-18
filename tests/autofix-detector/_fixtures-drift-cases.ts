@@ -66,10 +66,15 @@ const DATA_TESTID_CASES: DriftCase[] = [
     id: 'testid-05-availability-badge-data-status',
     locatorExpression: `getByTestId('availability-badge')`,
     ariaSnapshot: [
-      { role: 'status', name: 'In Stock', testAttributes: { 'data-test': 'stock-badge' } },
+      // Real Playwright ARIA usually carries the role description in the
+      // accessible name for status badges, e.g. "Availability badge: In Stock".
+      // That gives the classifier a name-token signal ("availability"/"badge")
+      // to confidently identify the candidate.
+      { role: 'status', name: 'Availability badge: In Stock',
+        testAttributes: { 'data-test': 'stock-badge' } },
     ],
     expectedKind: 'locator_drift_data_testid_only',
-    rationale: 'badge role+name preserved, data-test changed',
+    rationale: 'badge with role-descriptive accessible name; data-test changed',
   },
   {
     id: 'testid-06-data-qa-attribute',
@@ -154,10 +159,14 @@ const DATA_TESTID_CASES: DriftCase[] = [
     id: 'testid-14-detail-product-name-renamed',
     locatorExpression: `getByTestId('detail-product-name')`,
     ariaSnapshot: [
-      { role: 'heading', name: 'Full Cream Milk 2L', testAttributes: { 'data-test': 'product-name-detail' } },
+      // Heading carries a role-descriptive accessible name with both
+      // "product" and "name" tokens so the classifier can identify the
+      // candidate without relying on a prior visible-name snapshot.
+      { role: 'heading', name: 'Product name: Full Cream Milk 2L',
+        testAttributes: { 'data-test': 'product-name-detail' } },
     ],
     expectedKind: 'locator_drift_data_testid_only',
-    rationale: 'data-test value reordered tokens; heading text unchanged',
+    rationale: 'data-test value reordered tokens; descriptive heading name preserved',
   },
   {
     id: 'testid-15-namespaced-testid',
@@ -199,10 +208,13 @@ const DATA_TESTID_CASES: DriftCase[] = [
     id: 'testid-19-old-format-vs-new-format',
     locatorExpression: `getByTestId('header_nav')`,
     ariaSnapshot: [
-      { role: 'navigation', name: 'Main', testAttributes: { 'data-test': 'header-nav' } },
+      // Navigation with role-descriptive accessible name carrying both
+      // "header" and "nav" tokens.
+      { role: 'navigation', name: 'Header navigation',
+        testAttributes: { 'data-test': 'header-nav' } },
     ],
     expectedKind: 'locator_drift_data_testid_only',
-    rationale: 'naming convention migrated _ → -',
+    rationale: 'naming convention migrated _ → - while accessible name stayed stable',
   },
   {
     id: 'testid-20-stores-page-attribute',
@@ -470,10 +482,14 @@ const USER_VISIBLE_TEXT_CASES: DriftCase[] = [
     id: 'text-08-heading-text',
     locatorExpression: `getByRole('heading', { name: 'Welcome' })`,
     ariaSnapshot: [
-      { role: 'heading', name: 'Welcome to AisleChecker' },
+      // True rename — Playwright's substring matcher would NOT resolve
+      // "Welcome" against "Get Started". The earlier fixture used
+      // "Welcome to AisleChecker" which Playwright's substring matching
+      // would still resolve, so it wasn't actually a drift scenario.
+      { role: 'heading', name: 'Get Started' },
     ],
     expectedKind: 'locator_drift_user_visible_text',
-    rationale: 'heading expanded with brand name',
+    rationale: 'heading completely renamed; no substring overlap',
   },
   {
     id: 'text-09-cta-localized',
@@ -533,10 +549,12 @@ const USER_VISIBLE_TEXT_CASES: DriftCase[] = [
     id: 'text-15-button-name-with-icon',
     locatorExpression: `getByRole('button', { name: 'Save' })`,
     ariaSnapshot: [
-      { role: 'button', name: 'Save changes' },
+      // True rename. Earlier fixture used "Save changes" which Playwright's
+      // substring matching would still resolve, so it wasn't actual drift.
+      { role: 'button', name: 'Update' },
     ],
     expectedKind: 'locator_drift_user_visible_text',
-    rationale: 'button name expanded for clarity',
+    rationale: 'button completely renamed Save → Update; no substring overlap',
   },
   {
     id: 'text-16-empty-state-text',

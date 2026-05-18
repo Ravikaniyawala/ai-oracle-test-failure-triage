@@ -78,14 +78,23 @@ function findCandidate(
       );
       if (byName) return byName;
 
-      // Strong match: an element with the SAME testid value. Returning
-      // this lets the test_attribute branch detect "no drift" downstream
-      // (Codex P0 #2 — same testid means the locator didn't drift).
-      const byExactTestAttr = snapshot.find(
+      // Strong match: an element with the SAME testid value, under a
+      // CONFIGURED test attribute. Returning this lets the test_attribute
+      // branch detect "no drift" downstream (Codex P0 #2).
+      //
+      // Must filter by configured test-attribute keys — an unconfigured
+      // attribute (e.g. data-testid present in the snapshot when the
+      // consumer only configured data-test) carrying the same value
+      // would otherwise establish the repair target on the wrong basis
+      // (Codex re-review P1: exact-match must respect testAttrs).
+      const byExactConfiguredTestAttr = snapshot.find(
         e => e.testAttributes &&
-             Object.values(e.testAttributes).some(val => val === loc.value),
+             Object.entries(e.testAttributes).some(
+               ([k, val]) =>
+                 testAttrs.includes(k.toLowerCase()) && val === loc.value,
+             ),
       );
-      if (byExactTestAttr) return byExactTestAttr;
+      if (byExactConfiguredTestAttr) return byExactConfiguredTestAttr;
 
       // No strong match. Return null rather than picking an arbitrary
       // element with any test attribute — picking weakly here would let
